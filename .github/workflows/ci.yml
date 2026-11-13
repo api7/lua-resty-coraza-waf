@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+    inputs:
+      version:
+        description: version to pack; defaults to the latest rockspec
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build in manylinux_2_28 (glibc 2.28)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            quay.io/pypa/manylinux_2_28_${{ matrix.arch }} ci/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coraza_waf-${{ matrix.arch }}
+          path: prebuilt/coraza_waf-${{ matrix.arch }}.so
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        image: ["ubuntu:24.04", "ubuntu:22.04", "debian:bookworm", "rockylinux:9"]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: coraza_waf-${{ matrix.arch }}
+          path: prebuilt
+      - run: ci/smoke.sh "${{ matrix.image }}" prebuilt/coraza_waf-${{ matrix.arch }}.so
+
+  test-nginx:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: coraza_waf-${{ matrix.arch }}
+          path: prebuilt
+      - run: ci/test-nginx.sh prebuilt/coraza_waf-${{ matrix.arch }}.so
+
+  package:
+    needs: [smoke, test-nginx]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coraza_waf-*
+          path: prebuilt
+          merge-multiple: true
+      - name: Pack
+        id: pack
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -z "$VERSION" ]; then
+            VERSION=$(ls rockspec/ | sed -n 's/^lua-resty-coraza-waf-\(.*\)-1\.rockspec$/\1/p' | sort -V | tail -1)
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          ci/package.sh "$VERSION"
+      - run: ci/luarocks-test.sh "${{ steps.pack.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
