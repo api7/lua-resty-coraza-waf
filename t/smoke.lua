@@ -28,13 +28,13 @@ local directives = table.concat({
 
 local function build(d)
     local job = assert(coraza.build_start(d))
-    local start = os.clock()
+    local start = os.time()
     while true do
         local rs, berr = coraza.build_poll(job)
         if rs ~= false then
             return rs, berr
         end
-        check(os.clock() - start < 120, "build timed out")
+        check(os.time() - start < 120, "build timed out")
         ffi.C.usleep(10000)
     end
 end
@@ -68,7 +68,7 @@ local bad
 bad, err = build("SecRule ARGS \"@rx (\" \"id:1,phase:1,pass\"")
 check(bad == nil and err and err ~= "", "invalid directives were accepted")
 
-rs = nil
+rs = nil  -- luacheck: ignore 311 (drop the reference so it is collected)
 collectgarbage("collect")
 local stats = coraza.stats()
 check(stats.rule_sets == 0, "rule set not freed:", tostring(stats.rule_sets))

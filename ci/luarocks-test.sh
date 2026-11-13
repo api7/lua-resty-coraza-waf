@@ -13,7 +13,7 @@ version=$1
 docker run --rm -v "$PWD:/src:ro" ubuntu:24.04 bash -c '
 set -e
 apt-get update -qq && apt-get install -y -qq luarocks lua5.1 luajit make python3 >/dev/null
-! command -v go
+if command -v go >/dev/null; then echo "go must not be installed for this test" >&2; exit 1; fi
 cd /src/dist && (python3 -m http.server 8000 >/dev/null 2>&1 &) && sleep 1
 spec=lua-resty-coraza-waf-'"$version"'-1.rockspec
 mkdir /tmp/spec

@@ -20,6 +20,7 @@
 -- The Go runtime does not survive fork: load the library after fork, in the
 -- processes that use it (for example in init_worker of HTTP workers).
 local ffi = require("ffi")
+local ngx = ngx
 local ffi_string = ffi.string
 local ffi_new = ffi.new
 local ffi_gc = ffi.gc
@@ -30,10 +31,14 @@ local tostring = tostring
 local pcall = pcall
 local str_gmatch = string.gmatch
 local str_gsub = string.gsub
+local setmetatable = setmetatable
+local collectgarbage = collectgarbage
 
 local LIBRARY_NAME = "coraza_waf"
 local ERRCAP = 512
 local OUTCAP = 16384
+local POLL_INTERVAL = 0.002
+local FULL_GC_INTERVAL = 10
 
 if not pcall(ffi.typeof, "cwaf_request_t") then
     ffi.cdef[[
@@ -81,6 +86,19 @@ local res_t = ffi_new("cwaf_result_t")
 local headers_cap = 0
 local h_names, h_name_lens, h_values, h_value_lens
 
+-- rule sets built through rule_set(), per process
+local cache = {
+    -- directives -> rule set; an entry lives as long as a caller holds it
+    rule_sets = setmetatable({}, { __mode = "v" }),
+    -- directives -> rule set whose job still runs; keeps it alive when the
+    -- waiting request gives up, so that a later call picks the job up
+    pending = {},
+    -- directives -> { err = ..., expire = ... }
+    failed = {},
+    count = 0,
+    last_full_gc = 0,
+}
+
 
 local _M = { version = "0.1.0" }
 
@@ -97,8 +115,9 @@ local function find_library()
 end
 
 
--- Loads the library from path, or from package.cpath when path is nil.
--- Loading twice returns the library loaded first.
+-- Loads the library from path, or from package.cpath when path is nil, and
+-- waits for the Go runtime to start. Loading twice keeps the library loaded
+-- first.
 function _M.load(path)
     if lib then
         return true
@@ -114,6 +133,11 @@ function _M.load(path)
         return nil, "failed to load " .. path .. ": " .. tostring(l)
     end
     lib = l
+
+    -- the first call into the library waits for the Go runtime to finish
+    -- initializing (about 0.1s); take that wait here rather than in the
+    -- first request
+    lib.cwaf_stats(ffi_new("int64_t[3]"))
     return true
 end
 
@@ -153,6 +177,109 @@ function _M.build_poll(job, on_free)
         end
     end)
     return { handle = h, box = box }
+end
+
+
+local function release()
+    cache.count = cache.count - 1
+end
+
+
+local function wait_build(rs, directives, timeout, failed_ttl)
+    local deadline = ngx.now() + timeout
+    while rs.job do
+        local built, err = _M.build_poll(rs.job, release)
+        if built then
+            rs.handle = built.handle
+            rs.box = built.box
+            rs.job = nil
+            cache.pending[directives] = nil
+            return rs
+        end
+
+        if built == nil then
+            rs.job = nil
+            cache.pending[directives] = nil
+            cache.count = cache.count - 1
+            if cache.rule_sets[directives] == rs then
+                cache.rule_sets[directives] = nil
+            end
+            cache.failed[directives] = { err = err, expire = ngx.now() + failed_ttl }
+            return nil, "invalid", err
+        end
+
+        ngx.sleep(POLL_INTERVAL)
+        ngx.update_time()
+        if ngx.now() > deadline then
+            -- the job keeps running in Go; a later call picks it up
+            return nil, "timeout", "timed out waiting for the rule set to build"
+        end
+    end
+    return rs
+end
+
+
+-- Returns the rule set built from the directives, building it on a Go
+-- goroutine on first use while the calling request waits with ngx.sleep, so
+-- it must run in a phase that can yield. Calls with the same directives
+-- share one rule set, which is freed once no caller references it.
+--
+-- opts:
+--   timeout        seconds to wait for a build, default 60; on timeout the
+--                  build goes on and a later call returns its result
+--   max_rule_sets  limit of rule sets alive in this process, default none
+--   failed_ttl     seconds an invalid directives error is returned without
+--                  building again, default 60
+--
+-- On failure returns nil, a reason and a message. Reasons:
+--   "invalid"  the directives were rejected
+--   "timeout"  the build did not finish in time
+--   "limit"    max_rule_sets rule sets are alive
+--   "error"    the build could not start
+function _M.rule_set(directives, opts)
+    local timeout = opts and opts.timeout or 60
+    local failed_ttl = opts and opts.failed_ttl or 60
+    local max = opts and opts.max_rule_sets
+
+    local rs = cache.rule_sets[directives]
+    if rs then
+        if rs.handle then
+            return rs
+        end
+        return wait_build(rs, directives, timeout, failed_ttl)
+    end
+
+    local failed = cache.failed[directives]
+    if failed then
+        if failed.expire > ngx.now() then
+            return nil, "invalid", failed.err
+        end
+        cache.failed[directives] = nil
+    end
+
+    if max and cache.count >= max then
+        -- rule sets that nobody references are only released once Lua
+        -- collects them
+        local now = ngx.now()
+        if now - cache.last_full_gc >= FULL_GC_INTERVAL then
+            cache.last_full_gc = now
+            collectgarbage("collect")
+        end
+        if cache.count >= max then
+            return nil, "limit", cache.count .. " rule sets are alive"
+        end
+    end
+
+    local job, err = _M.build_start(directives)
+    if not job then
+        return nil, "error", err
+    end
+
+    rs = { job = job }
+    cache.rule_sets[directives] = rs
+    cache.pending[directives] = rs
+    cache.count = cache.count + 1
+    return wait_build(rs, directives, timeout, failed_ttl)
 end
 
 
@@ -239,7 +366,8 @@ function _M.eval(rule_set, req)
 end
 
 
--- Process wide counters of the Go side.
+-- Process wide counters: rule sets alive and builds running on the Go side,
+-- recovered panics, and rule sets held through rule_set().
 function _M.stats()
     local out = ffi_new("int64_t[3]")
     lib.cwaf_stats(out)
@@ -247,6 +375,7 @@ function _M.stats()
         rule_sets = tonumber(out[0]),
         building = tonumber(out[1]),
         panics = tonumber(out[2]),
+        cached = cache.count,
     }
 end
 

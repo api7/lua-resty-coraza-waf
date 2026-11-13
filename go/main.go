@@ -60,8 +60,6 @@ import "C"
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -80,8 +78,7 @@ var (
 )
 
 type ruleSet struct {
-	waf      coraza.WAF
-	argLimit int
+	waf coraza.WAF
 }
 
 type buildJob struct {
@@ -127,22 +124,7 @@ func newRuleSet(directives string) (rs *ruleSet, err error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ruleSet{waf: w, argLimit: argumentsLimit(directives)}, nil
-}
-
-// argumentsLimit returns the last SecArgumentsLimit in the directives, or the
-// Coraza default.
-func argumentsLimit(directives string) int {
-	limit := 1000
-	for _, line := range strings.Split(directives, "\n") {
-		f := strings.Fields(line)
-		if len(f) == 2 && strings.EqualFold(f[0], "SecArgumentsLimit") {
-			if n, err := strconv.Atoi(f[1]); err == nil && n > 0 {
-				limit = n
-			}
-		}
-	}
-	return limit
+	return &ruleSet{waf: w}, nil
 }
 
 // cwaf_build_start parses the directives on a goroutine and returns a job id

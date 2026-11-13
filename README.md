@@ -12,7 +12,7 @@ neither Go nor libre2.
 
 | Component | Version |
 |---|---|
-| Coraza | v3.3.3 |
+| Coraza | v3.8.1 |
 | OWASP CRS | v4.14.0 |
 | RE2 / Abseil | 2024-07-02 / 20240722.0 |
 
@@ -30,46 +30,75 @@ directory. Other platforms build from source (below).
 
 The Go runtime does not survive `fork()`: load the library after fork, in the
 processes that use it, for example in `init_worker_by_lua*` of HTTP workers.
+`load` also waits for the Go runtime to start, so that no request does.
 
 ```lua
+-- init_worker_by_lua_block
+assert(require("resty.coraza").load())  -- finds coraza_waf.so in package.cpath
+```
+
+```lua
+-- access_by_lua_block (any phase that can yield)
 local coraza = require("resty.coraza")
+local request = require("resty.coraza.request")
 
-assert(coraza.load())  -- finds coraza_waf.so in package.cpath
-
-local job = assert(coraza.build_start([[
+-- built once per process on a Go goroutine, and shared by every call with the
+-- same directives; the calling request waits with ngx.sleep
+local rule_set, reason, err = coraza.rule_set([[
 Include @coraza.conf-recommended
 Include @crs-setup.conf.example
 Include @owasp_crs/*.conf
 SecRuleEngine DetectionOnly
-]]))
+]], { timeout = 60, max_rule_sets = 8 })
+if not rule_set then
+    ngx.log(ngx.ERR, reason, ": ", err)  -- "invalid", "timeout", "limit" or "error"
+    return
+end
 
--- building the CRS takes a few hundred milliseconds on a Go goroutine
-local rule_set, err
-repeat
-    ngx.sleep(0.002)
-    rule_set, err = coraza.build_poll(job)
-until rule_set ~= false
-assert(rule_set, err)
+local headers, too_many_headers = request.get_headers(100)
+local body, body_state = request.read_body({
+    max_size = 131072,
+    media_type_allowed = request.media_type_matcher({
+        "application/json", "application/*+json", "application/x-www-form-urlencoded",
+    }),
+})
 
 local res = assert(coraza.eval(rule_set, {
     method = ngx.req.get_method(),
     uri = ngx.var.request_uri,
-    protocol = "HTTP/" .. ngx.req.http_version(),
+    protocol = ngx.var.server_protocol,
     client_ip = ngx.var.remote_addr,
     client_port = tonumber(ngx.var.remote_port),
     server_name = ngx.var.host,
-    headers = { { "Host", ngx.var.host }, { "User-Agent", ngx.var.http_user_agent or "" } },
-    body = ngx.req.get_body_data(),
+    headers = headers,
+    body = body,
 }))
 -- res.anomaly_score, res.rule_ids ("942100,949110"), res.matches (JSON)
 ```
 
 `eval` runs request phases 1 and 2 and logging in one call. Response phases
-are never run. The rule set is freed when `rule_set` is garbage collected.
+are never run. With `SecRuleEngine DetectionOnly` nothing is interrupted and
+the result only reports what matched. To block, use `SecRuleEngine On` and act
+on `res.interrupted` (and `res.interrupt_rule_id`), for example with
+`ngx.exit(ngx.HTTP_FORBIDDEN)`. Keep a reference to the rule set (for example next to the
+configuration it was built from): it is freed once nobody references it.
+
+`read_body` returns the body state: `none`, `skipped_type`,
+`skipped_encoding`, `skipped_oversize`, `inspected` or `truncated`. Multipart,
+JSON and XML bodies over `max_size` are skipped, as Coraza cannot parse them
+cut; other types are inspected up to `max_size`.
+
+## Test
+
+```sh
+make build && make test                        # Go
+CORAZA_WAF_LIB=$PWD/coraza_waf.so prove -I. -r t/  # OpenResty, Test::Nginx
+luajit t/smoke.lua ./coraza_waf.so             # plain LuaJIT
+```
 
 ## Build from source
 
-Needs Go 1.24 or later and a C++17 compiler.
+Needs Go 1.25 or later and a C++17 compiler.
 
 ```sh
 # against the system libre2 (libre2-dev, pkg-config)

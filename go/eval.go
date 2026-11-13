@@ -102,7 +102,8 @@ func evaluate(rs *ruleSet, req *request, out []byte) (*result, error) {
 	tx.ProcessLogging()
 
 	if it != nil {
-		res.interrupted = it.Status
+		// a drop or a deny without status has Status 0
+		res.interrupted = 1
 		res.interruptRuleID = it.RuleID
 	}
 
@@ -113,11 +114,9 @@ func evaluate(rs *ruleSet, req *request, out []byte) (*result, error) {
 				res.anomalyScore = n
 			}
 		}
-		// Coraza stops adding arguments to a collection once it holds
-		// argLimit entries. The 3.3.3 body processors ignore the limit, so a
-		// larger collection was not cut.
-		res.argsLimitReached = len(vars.ArgsGet().FindAll()) == rs.argLimit ||
-			len(vars.ArgsPost().FindAll()) == rs.argLimit
+		// set by Coraza when it dropped arguments over SecArgumentsLimit,
+		// from the query or from a body processor
+		res.argsLimitReached = vars.ArgumentsLimitReached().Get() == "1"
 	}
 
 	writeMatches(tx.MatchedRules(), req.logMatchedData, res, out)

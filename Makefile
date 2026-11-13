@@ -23,6 +23,8 @@ INSTALL ?= install
 
 # A release tarball carries prebuilt/coraza_waf-<arch>.so; a git checkout
 # does not and builds from source.
+# The prebuilt libraries are Linux ELF files.
+OS := $(shell uname -s)
 ARCH := $(shell uname -m | sed -e 's/^arm64$$/aarch64/' -e 's/^amd64$$/x86_64/')
 PREBUILT := prebuilt/coraza_waf-$(ARCH).so
 
@@ -31,6 +33,10 @@ PREBUILT := prebuilt/coraza_waf-$(ARCH).so
 all:
 ifeq ($(wildcard prebuilt),)
 	$(MAKE) build
+else ifneq ($(OS),Linux)
+	@echo "the prebuilt libraries are for Linux, not $(OS);" \
+	      "build from a git checkout with Go and libre2 instead" >&2
+	@exit 1
 else ifeq ($(wildcard $(PREBUILT)),)
 	@echo "no prebuilt library for $(ARCH) in this release;" \
 	      "build from a git checkout with Go and libre2-dev instead" >&2
@@ -46,8 +52,9 @@ test:
 	cd go && CGO_ENABLED=1 $(GO) test -count=1 -tags $(GO_TAGS) ./...
 
 install:
-	$(INSTALL) -d $(DESTDIR)$(LIBDIR) $(DESTDIR)$(LUADIR)/resty
+	$(INSTALL) -d $(DESTDIR)$(LIBDIR) $(DESTDIR)$(LUADIR)/resty/coraza
 	$(INSTALL) -m 644 lib/resty/coraza.lua $(DESTDIR)$(LUADIR)/resty/
+	$(INSTALL) -m 644 lib/resty/coraza/request.lua $(DESTDIR)$(LUADIR)/resty/coraza/
 ifeq ($(wildcard prebuilt),)
 	$(INSTALL) -m 755 $(OUTPUT_NAME) $(DESTDIR)$(LIBDIR)/coraza_waf.so
 else

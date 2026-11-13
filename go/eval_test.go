@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testDirectives = `Include @coraza.conf-recommended
@@ -43,9 +44,6 @@ func newTestRuleSet(t *testing.T) *ruleSet {
 	rs, err := newRuleSet(testDirectives)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if rs.argLimit != 5 {
-		t.Fatalf("argLimit = %d", rs.argLimit)
 	}
 	return rs
 }
@@ -113,7 +111,6 @@ func TestSQLiQuery(t *testing.T) {
 
 func TestJSONBodyAndArgsLimit(t *testing.T) {
 	rs := newTestRuleSet(t)
-	// Coraza 3.3.3 applies SecArgumentsLimit to query arguments only
 	req := baseRequest("/hello?a=1&b=2&c=3&d=4&e=5&f=%3Cscript%3Ealert(1)%3C%2Fscript%3E")
 	res, ids, matches := run(t, rs, req)
 	if !res.argsLimitReached {
@@ -161,5 +158,69 @@ func TestMatchesTruncated(t *testing.T) {
 func TestBuildError(t *testing.T) {
 	if _, err := newRuleSet("SecRule ARGS \"@rx (\" \"id:1,phase:1,pass\""); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestArgsLimitCountsValues(t *testing.T) {
+	rs := newTestRuleSet(t)
+	// three names, six values: over the limit of 5
+	res, _, _ := run(t, rs, baseRequest("/hello?a=1&a=2&a=3&b=1&b=2&evil=1"))
+	if !res.argsLimitReached {
+		t.Fatal("args limit not reported for repeated names")
+	}
+	res, _, _ = run(t, rs, baseRequest("/hello?a=1&a=2&b=1"))
+	if res.argsLimitReached {
+		t.Fatal("args limit reported under the limit")
+	}
+}
+
+func TestArgsLimitBody(t *testing.T) {
+	rs := newTestRuleSet(t)
+	req := baseRequest("/hello")
+	req.method = "POST"
+	req.headers = append(req.headers, [2]string{"Content-Type", "application/x-www-form-urlencoded"})
+	req.body = []byte("a=1&b=2&c=3&d=4&e=5&f=6")
+	res, _, _ := run(t, rs, req)
+	if !res.argsLimitReached {
+		t.Fatal("args limit not reported for a body")
+	}
+}
+
+func TestArgsLimitQuoted(t *testing.T) {
+	rs, err := newRuleSet("SecArgumentsLimit \"2\"\nSecRuleEngine DetectionOnly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _, _ := run(t, rs, baseRequest("/hello?a=1&b=2&c=3"))
+	if !res.argsLimitReached {
+		t.Fatal("args limit not reported with a quoted limit")
+	}
+}
+
+func TestInterruptionWithoutStatus(t *testing.T) {
+	rs, err := newRuleSet(`SecRuleEngine On
+SecRule ARGS:x "@streq 1" "id:1,phase:1,drop,log"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _, _ := run(t, rs, baseRequest("/hello?x=1"))
+	if res.interrupted != 1 || res.interruptRuleID != 1 {
+		t.Fatalf("interrupted = %d rule = %d", res.interrupted, res.interruptRuleID)
+	}
+}
+
+// GHSA-6gcq-wc29-5xf2: deeply nested JSON took time and memory quadratic in
+// its depth before Coraza 3.8.1 (32 KiB: about a minute, 2.7 GB).
+func TestDeepJSON(t *testing.T) {
+	rs := newTestRuleSet(t)
+	depth := 65536
+	req := baseRequest("/hello")
+	req.method = "POST"
+	req.headers = append(req.headers, [2]string{"Content-Type", "application/json"})
+	req.body = []byte(strings.Repeat("[", depth) + strings.Repeat("]", depth))
+	start := time.Now()
+	run(t, rs, req)
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("nested JSON took %v", d)
 	}
 }
