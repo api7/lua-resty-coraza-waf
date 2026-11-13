@@ -4,3 +4,4 @@
 *.so
 *.h
 /t/servroot/
+/go/go
