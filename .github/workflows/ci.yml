@@ -4,12 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_call:
-    inputs:
-      version:
-        description: version to pack; defaults to the latest rockspec
-        type: string
-        required: false
 
 permissions:
   contents: read
@@ -73,32 +67,3 @@ jobs:
           name: coraza_waf-${{ matrix.arch }}
           path: prebuilt
       - run: ci/test-nginx.sh prebuilt/coraza_waf-${{ matrix.arch }}.so
-
-  package:
-    needs: [smoke, test-nginx]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: coraza_waf-*
-          path: prebuilt
-          merge-multiple: true
-      - name: Pack
-        id: pack
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          if [ -z "$VERSION" ]; then
-            VERSION=$(ls rockspec/ | sed -n 's/^lua-resty-coraza-waf-\(.*\)-1\.rockspec$/\1/p' | sort -V | tail -1)
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          ci/package.sh "$VERSION"
-      - run: ci/luarocks-test.sh "${{ steps.pack.outputs.version }}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/*
-          if-no-files-found: error
