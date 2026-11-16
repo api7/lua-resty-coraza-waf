@@ -98,8 +98,16 @@ host headers: 1
                 { "type not allowed", "POST", "<a/>",
                   { ["Content-Type"] = "text/xml" } },
                 { "no type", "POST", "abc", {} },
+                { "no type over max_size", "POST", '{"a":"0123456789abcdef"}', {} },
                 { "gzip", "POST", "abc",
                   { ["Content-Type"] = "application/json", ["Content-Encoding"] = "gzip" } },
+                { "gzip in a list", "POST", "abc",
+                  { ["Content-Type"] = "application/json",
+                    ["Content-Encoding"] = "identity, GZIP" } },
+                { "unknown encoding", "POST", "abc",
+                  { ["Content-Type"] = "application/json", ["Content-Encoding"] = "foo" } },
+                { "identity", "POST", "abc",
+                  { ["Content-Type"] = "application/json", ["Content-Encoding"] = "identity" } },
                 { "json over max_size", "POST", '{"a":"0123456789abcdef"}',
                   { ["Content-Type"] = "application/json" } },
                 { "form over max_size", "POST", "a=0123456789abcdef",
@@ -118,8 +126,12 @@ GET, no body: none -
 json: inspected 7
 vendor json: inspected 7
 type not allowed: skipped_type -
-no type: skipped_type -
+no type: inspected 3
+no type over max_size: truncated 16
 gzip: skipped_encoding -
+gzip in a list: skipped_encoding -
+unknown encoding: inspected 3
+identity: inspected 3
 json over max_size: skipped_oversize -
 form over max_size: truncated 16
 empty: none -
@@ -219,6 +231,8 @@ text/plain: true
             }))
             ngx.say("body: ", state)
             ngx.say("rule ids: ", res.rule_ids)
+            ngx.say("interrupted: ", res.interrupted, ", would interrupt: ",
+                    res.would_interrupt_rule_id)
         }
     }
 --- request
@@ -231,6 +245,7 @@ Accept: */*
 --- response_body
 body: inspected
 rule ids: 942100,949110
+interrupted: false, would interrupt: 949110
 
 
 
@@ -274,3 +289,77 @@ application/x-www-form-urlencoded | text/plain
 "GET /t HTTP/1.0\r\n\r\n"
 --- response_body
 host headers: 0
+
+
+
+=== TEST 11: a body without Content-Type is inspected, as CRS parses it as URLENCODED
+--- config
+    location /t {
+        content_by_lua_block {
+            local coraza = require("resty.coraza")
+            local request = require("resty.coraza.request")
+            local crs = require("crs")
+
+            local rs = assert(coraza.rule_set(crs.directives()))
+            local body, state = request.read_body({
+                max_size = 1024,
+                media_type_allowed = request.media_type_matcher({ "application/json" }),
+            })
+            local res = assert(coraza.eval(rs, {
+                method = ngx.req.get_method(),
+                uri = ngx.var.request_uri,
+                protocol = ngx.var.server_protocol,
+                client_ip = ngx.var.remote_addr,
+                client_port = tonumber(ngx.var.remote_port),
+                server_name = ngx.var.host,
+                headers = request.get_headers(),
+                body = body,
+            }))
+            ngx.say("body: ", state)
+            ngx.say("rule ids: ", res.rule_ids)
+        }
+    }
+--- request
+POST /t
+{"q": "<script>alert(1)</script>"}
+--- more_headers
+User-Agent: curl/8.5.0
+Accept: */*
+--- response_body
+body: inspected
+rule ids: 920340,941100,941110,941160,941390,949110
+
+
+
+=== TEST 12: an HTTP/2 request without Content-Type
+--- http2
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({ max_size = 1024 })
+            ngx.say(state, " ", body)
+        }
+    }
+--- request
+POST /t
+a=1
+--- response_body
+inspected a=1
+
+
+
+=== TEST 13: an HTTP/2 request without Content-Type and body
+--- http2
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({ max_size = 1024 })
+            ngx.say(state, " ", body)
+        }
+    }
+--- request
+POST /t
+--- response_body
+none nil

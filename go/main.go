@@ -54,6 +54,7 @@ typedef struct {
     int args_limit_reached;
     int rule_ids_len;
     int matches_len;
+    int would_interrupt_rule_id;
 } cwaf_result_t;
 */
 import "C"
@@ -238,6 +239,7 @@ func cwaf_eval(h C.int64_t, req *C.cwaf_request_t, res *C.cwaf_result_t,
 	res.args_limit_reached = boolInt(r.argsLimitReached)
 	res.rule_ids_len = C.int(r.ruleIDsLen)
 	res.matches_len = C.int(r.matchesLen)
+	res.would_interrupt_rule_id = C.int(r.wouldInterruptRuleID)
 	return 0
 }
 

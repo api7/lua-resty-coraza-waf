@@ -46,13 +46,15 @@ type request struct {
 }
 
 type result struct {
-	interrupted      int
-	interruptRuleID  int
-	matched          int
-	anomalyScore     int
-	argsLimitReached bool
-	ruleIDsLen       int
-	matchesLen       int
+	interrupted     int
+	interruptRuleID int
+	// the rule that interrupts, or would interrupt with SecRuleEngine On
+	wouldInterruptRuleID int
+	matched              int
+	anomalyScore         int
+	argsLimitReached     bool
+	ruleIDsLen           int
+	matchesLen           int
 }
 
 type match struct {
@@ -105,6 +107,13 @@ func evaluate(rs *ruleSet, req *request, out []byte) (*result, error) {
 		// a drop or a deny without status has Status 0
 		res.interrupted = 1
 		res.interruptRuleID = it.RuleID
+		res.wouldInterruptRuleID = it.RuleID
+	} else if d, ok := tx.(interface {
+		DetectionOnlyInterruption() *types.Interruption
+	}); ok {
+		if di := d.DetectionOnlyInterruption(); di != nil {
+			res.wouldInterruptRuleID = di.RuleID
+		}
 	}
 
 	if st, ok := tx.(plugintypes.TransactionState); ok {

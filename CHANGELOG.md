@@ -30,8 +30,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `load()` waits for the Go runtime to start, so that the first request does
   not block the worker.
 - `resty.coraza.request`: reads the request headers (with `Host` added for
-  HTTP/2) and the body (media type filter, Content-Encoding, size limit,
-  truncation only where Coraza can parse a cut body, spooled bodies read up to
-  the limit).
+  HTTP/2) and the body (media type filter, compressed Content-Encoding skipped,
+  size limit, truncation only where Coraza can parse a cut body, spooled bodies
+  read up to the limit). A body without a media type is always inspected, as
+  CRS parses it as URLENCODED.
+- `would_interrupt_rule_id`: the rule that interrupts, or would interrupt with
+  `SecRuleEngine On`, so that `DetectionOnly` shows what blocking would do.
+- The Go, Abseil and RE2 archives of the release build are checked against
+  pinned sha256 sums.
 - Releases with the library prebuilt for Linux x86_64 and aarch64, installed by
   the rockspec without Go or libre2.

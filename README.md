@@ -64,10 +64,16 @@ local body, body_state = request.read_body({
         "application/json", "application/*+json", "application/x-www-form-urlencoded",
     }),
 })
--- A body that is skipped ("skipped_type", "skipped_encoding",
--- "skipped_oversize") or "truncated" is not, or only partly, inspected.
--- Which ones to reject is a policy; here a body over max_size is rejected,
--- whether it was skipped (JSON, XML, multipart) or cut (other types).
+-- Headers past the first 100, and a body that is skipped ("skipped_type",
+-- "skipped_encoding", "skipped_oversize") or "truncated", are not, or only
+-- partly, inspected. Which ones to reject is a policy; here all of them are,
+-- except a media type left out of media_type_allowed on purpose.
+if too_many_headers then
+    return ngx.exit(ngx.HTTP_BAD_REQUEST)
+end
+if body_state == "skipped_encoding" then
+    return ngx.exit(ngx.HTTP_UNSUPPORTED_MEDIA_TYPE)
+end
 if body_state == "skipped_oversize" or body_state == "truncated" then
     return ngx.exit(ngx.HTTP_REQUEST_ENTITY_TOO_LARGE)
 end
@@ -87,15 +93,32 @@ local res = assert(coraza.eval(rule_set, {
 
 `eval` runs request phases 1 and 2 and logging in one call. Response phases
 are never run. With `SecRuleEngine DetectionOnly` nothing is interrupted and
-the result only reports what matched. To block, use `SecRuleEngine On` and act
-on `res.interrupted` (and `res.interrupt_rule_id`), for example with
+the result only reports what matched; `res.would_interrupt_rule_id` is the
+rule that would interrupt with `SecRuleEngine On` (0 for none), to watch
+before blocking. To block, use `SecRuleEngine On` and act on
+`res.interrupted` (and `res.interrupt_rule_id`), for example with
 `ngx.exit(ngx.HTTP_FORBIDDEN)`. Keep a reference to the rule set (for example next to the
 configuration it was built from): it is freed once nobody references it.
 
 `read_body` returns the body state: `none`, `skipped_type`,
 `skipped_encoding`, `skipped_oversize`, `inspected` or `truncated`. Multipart,
 JSON and XML bodies over `max_size` are skipped, as Coraza cannot parse them
-cut; other types are inspected up to `max_size`.
+cut; other types are inspected up to `max_size`. A body without a media type
+is always inspected, as CRS parses it as URLENCODED (rule 901340) and many
+backends parse it as JSON. Only compressed codings (`gzip`, `deflate`, `br`,
+`compress`, `zstd`) give `skipped_encoding`; an unknown coding is inspected
+as it came.
+
+Each nginx worker runs its own Go runtime and builds its own copy of a rule
+set. Go sizes its scheduler from the CPUs it may use,
+and its GC and build goroutines run on threads beside the nginx worker. To
+limit them, set `GOMAXPROCS`, `GOGC` or `GOMEMLIMIT` and pass them to the
+workers with the nginx `env` directive, which nginx otherwise clears:
+
+```nginx
+env GOMAXPROCS=2;
+env GOMEMLIMIT=512MiB;
+```
 
 ## Test
 

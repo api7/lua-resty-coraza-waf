@@ -29,6 +29,7 @@ local type = type
 local tonumber = tonumber
 local io_open = io.open
 local str_find = string.find
+local str_gmatch = string.gmatch
 local str_gsub = string.gsub
 local str_lower = string.lower
 local str_match = string.match
@@ -109,6 +110,22 @@ function _M.media_type_matcher(patterns)
 end
 
 
+-- codings that turn the body into bytes no rule can match
+local COMPRESSED = {
+    gzip = true, ["x-gzip"] = true, deflate = true, br = true,
+    compress = true, ["x-compress"] = true, zstd = true,
+}
+
+local function is_compressed(encoding)
+    for coding in str_gmatch(str_lower(encoding), "[^,%s]+") do
+        if COMPRESSED[coding] then
+            return true
+        end
+    end
+    return false
+end
+
+
 local function read_file_prefix(path, n)
     local f, err = io_open(path, "rb")
     if not f then
@@ -124,8 +141,8 @@ end
 
 -- Reads the request body to inspect. Returns the body or nil, and the state:
 --   "none"              no body
---   "skipped_type"      no media type, or one media_type_allowed rejects
---   "skipped_encoding"  a Content-Encoding other than identity
+--   "skipped_type"      a media type media_type_allowed rejects
+--   "skipped_encoding"  a compressed Content-Encoding (gzip, br, ...)
 --   "skipped_oversize"  over max_size and of a type that cannot be cut
 --   "inspected"         the whole body is returned
 --   "truncated"         the first max_size bytes are returned
@@ -133,6 +150,11 @@ end
 -- opts:
 --   max_size            bytes to inspect at most (required)
 --   media_type_allowed  function(media_type) -> boolean, default all types
+--
+-- A body without a media type is inspected whatever media_type_allowed says:
+-- CRS parses it as URLENCODED (rule 901340) and many backends parse it as
+-- JSON. An unknown Content-Encoding is inspected as it came, as a backend
+-- that does not know it is likely to do the same.
 --
 -- A body spooled to a file is read up to max_size + 1 bytes only.
 function _M.read_body(opts)
@@ -152,24 +174,13 @@ function _M.read_body(opts)
     local content_type = ngx_var.http_content_type
     local media_type = content_type
                        and str_lower(str_match(content_type, "^%s*([^;%s]+)") or "")
-    if not media_type or media_type == "" then
-        -- an HTTP/2 request carries no length up front, so look before
-        -- reporting a body that may not exist
-        if not length_known then
-            req_read_body()
-            if not req_get_body_data() and not req_get_body_file() then
-                return nil, "none"
-            end
-        end
-        return nil, "skipped_type"
-    end
-
-    if allowed and not allowed(media_type) then
+                       or ""
+    if media_type ~= "" and allowed and not allowed(media_type) then
         return nil, "skipped_type"
     end
 
     local encoding = ngx_var.http_content_encoding
-    if encoding and str_lower(encoding) ~= "identity" then
+    if encoding and is_compressed(encoding) then
         return nil, "skipped_encoding"
     end
 

@@ -69,6 +69,7 @@ if not pcall(ffi.typeof, "cwaf_request_t") then
         int args_limit_reached;
         int rule_ids_len;
         int matches_len;
+        int would_interrupt_rule_id;
     } cwaf_result_t;
 
     int64_t cwaf_build_start(const char *dirs, int dlen);
@@ -208,7 +209,13 @@ local function poll_once(rs, directives, failed_ttl)
     if cache.rule_sets[directives] == rs then
         cache.rule_sets[directives] = nil
     end
-    cache.failed[directives] = { err = err, expire = ngx.now() + failed_ttl }
+    local now = ngx.now()
+    for d, f in pairs(cache.failed) do
+        if f.expire <= now then
+            cache.failed[d] = nil
+        end
+    end
+    cache.failed[directives] = { err = err, expire = now + failed_ttl }
     return true
 end
 
@@ -332,8 +339,8 @@ local function ensure_header_cap(n)
 end
 
 
--- Inspects one request: phases 1 and 2 and logging; the rule set is used in
--- DetectionOnly mode, so nothing is blocked here. req fields: method, uri,
+-- Inspects one request: phases 1 and 2 and logging; nothing is blocked
+-- here, the caller acts on interrupted. req fields: method, uri,
 -- protocol, client_ip, client_port, server_ip, server_port, server_name,
 -- tx_id, headers ({{name, value}, ...}), body, log_matched_data.
 function _M.eval(rule_set, req)
@@ -390,6 +397,7 @@ function _M.eval(rule_set, req)
     return {
         interrupted = res_t.interrupted ~= 0,
         interrupt_rule_id = res_t.interrupt_rule_id,
+        would_interrupt_rule_id = res_t.would_interrupt_rule_id,
         matched = res_t.matched,
         anomaly_score = res_t.anomaly_score,
         args_limit_reached = res_t.args_limit_reached ~= 0,

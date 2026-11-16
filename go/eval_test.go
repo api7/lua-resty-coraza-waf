@@ -99,6 +99,9 @@ func TestSQLiQuery(t *testing.T) {
 	if res.interrupted != 0 {
 		t.Fatalf("DetectionOnly must not interrupt")
 	}
+	if res.wouldInterruptRuleID != 949110 {
+		t.Fatalf("would interrupt rule = %d", res.wouldInterruptRuleID)
+	}
 	for _, m := range matches {
 		if _, ok := m["data"]; ok {
 			t.Fatalf("data must be omitted")
@@ -204,8 +207,31 @@ SecRule ARGS:x "@streq 1" "id:1,phase:1,drop,log"`)
 		t.Fatal(err)
 	}
 	res, _, _ := run(t, rs, baseRequest("/hello?x=1"))
-	if res.interrupted != 1 || res.interruptRuleID != 1 {
-		t.Fatalf("interrupted = %d rule = %d", res.interrupted, res.interruptRuleID)
+	if res.interrupted != 1 || res.interruptRuleID != 1 || res.wouldInterruptRuleID != 1 {
+		t.Fatalf("interrupted = %d rule = %d would = %d",
+			res.interrupted, res.interruptRuleID, res.wouldInterruptRuleID)
+	}
+}
+
+func TestDetectionOnlyWouldInterrupt(t *testing.T) {
+	rs, err := newRuleSet(`SecRuleEngine DetectionOnly
+SecRule ARGS:x "@streq 1" "id:1,phase:1,deny,log"
+SecRule ARGS:x "@streq 1" "id:2,phase:1,deny,log"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, ids, _ := run(t, rs, baseRequest("/hello?x=1"))
+	if res.interrupted != 0 || res.interruptRuleID != 0 || res.wouldInterruptRuleID != 1 {
+		t.Fatalf("interrupted = %d rule = %d would = %d",
+			res.interrupted, res.interruptRuleID, res.wouldInterruptRuleID)
+	}
+	if ids != "1,2" {
+		t.Fatalf("ids = %q", ids)
+	}
+
+	res, _, _ = run(t, rs, baseRequest("/hello?x=2"))
+	if res.wouldInterruptRuleID != 0 {
+		t.Fatalf("would interrupt rule = %d", res.wouldInterruptRuleID)
 	}
 }
 
