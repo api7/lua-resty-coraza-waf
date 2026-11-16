@@ -5,7 +5,10 @@
 package.path = "lib/?.lua;" .. package.path
 
 local ffi = require("ffi")
-ffi.cdef[[ int usleep(unsigned int usec); ]]
+ffi.cdef[[
+int usleep(unsigned int usec);
+int chdir(const char *path);
+]]
 
 local coraza = require("resty.coraza")
 
@@ -24,14 +27,17 @@ local ok, err = coraza.load()
 check(not ok and err:find("not found in package.cpath", 1, true),
       "load without the library in package.cpath:", tostring(err))
 
--- found in package.cpath as coraza_waf.so
+-- found as coraza_waf.so through a relative package.cpath entry
 local dir = os.tmpname()
 os.remove(dir)
 local rc = os.execute(string.format('mkdir %q && ln -s "$(realpath %q)" %q/coraza_waf.so',
                                     dir, lib_path, dir))
 check(rc == 0 or rc == true, "failed to link the library in", dir)
-package.cpath = dir .. "/?.so;" .. cpath
+local cwd = assert(os.getenv("PWD"))
+check(ffi.C.chdir(dir) == 0, "failed to enter", dir)
+package.cpath = "?.so;" .. cpath
 ok, err = coraza.load()
+ffi.C.chdir(cwd)
 os.execute(string.format("rm -r %q", dir))
 check(ok, err)
 

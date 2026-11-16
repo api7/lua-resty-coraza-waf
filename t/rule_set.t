@@ -331,3 +331,17 @@ built
 abandoned: timeout
 again: invalid, built again: true
 other: true
+
+
+
+=== TEST 12: eval with a rule set that does not exist returns the error
+--- config
+    location /t {
+        content_by_lua_block {
+            local coraza = require("resty.coraza")
+            local res, err = coraza.eval({ handle = 999999999 }, { uri = "/" })
+            ngx.say(res, " ", err)
+        }
+    }
+--- response_body
+nil unknown rule set handle

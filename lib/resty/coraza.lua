@@ -28,6 +28,7 @@ local package = package
 local tonumber = tonumber
 local tostring = tostring
 local pcall = pcall
+local str_find = string.find
 local setmetatable = setmetatable
 local collectgarbage = collectgarbage
 local pairs = pairs
@@ -111,9 +112,15 @@ function _M.load(path)
         return true
     end
 
-    path = path or package.searchpath(LIBRARY_NAME, package.cpath)
     if not path then
-        return nil, LIBRARY_NAME .. " is not found in package.cpath"
+        path = package.searchpath(LIBRARY_NAME, package.cpath)
+        if not path then
+            return nil, LIBRARY_NAME .. " is not found in package.cpath"
+        end
+        -- ffi.load takes a name without "/" as a library to look up
+        if not str_find(path, "/", 1, true) then
+            path = "./" .. path
+        end
     end
 
     local ok, l = pcall(ffi.load, path)

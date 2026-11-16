@@ -630,3 +630,69 @@ Content-Type: application/x-www-form-urlencoded
 --- response_body
 error nil
 true
+
+
+
+=== TEST 24: repeated Content-Type headers with parameters are inspected
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({
+                max_size = 1024,
+                media_type_allowed = request.media_type_matcher({ "application/json" }),
+            })
+            ngx.say(state, " ", body and #body or "-")
+        }
+    }
+--- request
+POST /t
+{"a":1}
+--- more_headers
+Content-Type: text/plain; charset=utf-8
+Content-Type: application/json
+--- response_body
+inspected 7
+
+
+
+=== TEST 25: the whole Content-Type value is checked before the allowed types
+--- config
+    location /body {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({
+                max_size = 1024,
+                media_type_allowed = request.media_type_matcher({ "application/json" }),
+            })
+            ngx.say(state, " ", body and #body or "-")
+        }
+    }
+    location /t {
+        content_by_lua_block {
+            local cases = {
+                { "trailing text", "text/plain garbage" },
+                { "comma after parameters", "text/plain; charset=utf-8, application/json" },
+                { "comma in a quoted parameter", 'text/plain; a="x,y"' },
+                { "only parameters", "; charset=utf-8" },
+                { "parameters", "text/plain; charset=utf-8" },
+                { "space before parameters", "text/plain ; charset=utf-8" },
+                { "trailing semicolon", "text/plain;" },
+                { "allowed with parameters", "application/json; charset=utf-8" },
+            }
+            local raw_http = require("raw_http")
+            for _, c in ipairs(cases) do
+                ngx.print(c[1], ": ", raw_http.request("POST", "/body",
+                                                       { ["Content-Type"] = c[2] }, "abc"))
+            end
+        }
+    }
+--- response_body
+trailing text: inspected 3
+comma after parameters: inspected 3
+comma in a quoted parameter: inspected 3
+only parameters: inspected 3
+parameters: skipped_type -
+space before parameters: skipped_type -
+trailing semicolon: skipped_type -
+allowed with parameters: inspected 3

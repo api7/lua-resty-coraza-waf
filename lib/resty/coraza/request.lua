@@ -151,6 +151,16 @@ local function read_file_prefix(path, n)
 end
 
 
+-- Whether a Content-Type is a media type followed by nothing or by
+-- parameters. A comma, which only a quoted parameter value may hold, is taken
+-- as repeated headers joined by nginx.
+local function well_formed(media_type, params)
+    return str_find(media_type, MEDIA_TYPE) ~= nil
+           and not str_find(params, ",", 1, true)
+           and (str_find(params, "^%s*;") or str_find(params, "^%s*$")) ~= nil
+end
+
+
 -- Reads the request body to inspect. Returns the body or nil, the state and,
 -- for "error", the error:
 --   "none"              no body
@@ -165,10 +175,10 @@ end
 --   max_size            bytes to inspect at most (required)
 --   media_type_allowed  function(media_type) -> boolean, default all types
 --
--- A body without a media type, or with a malformed one, is inspected
--- whatever media_type_allowed says: CRS parses it as URLENCODED (rule
--- 901340) and many backends parse it as JSON. Repeated Content-Type headers,
--- which nginx joins with commas, give a malformed one. An unknown
+-- A body without a media type, or with a malformed Content-Type, is
+-- inspected whatever media_type_allowed says: CRS parses it as URLENCODED
+-- (rule 901340) and many backends parse it as JSON. Repeated Content-Type
+-- headers, which nginx joins with commas, are malformed. An unknown
 -- Content-Encoding is inspected as it came, as a backend that does not know
 -- it is likely to do the same.
 --
@@ -193,14 +203,16 @@ function _M.read_body(opts)
         end
     end
 
+    local media_type, params = "", ""
     local content_type = ngx_var.http_content_type
-    local media_type = content_type
-                       and str_lower(str_match(content_type, "^%s*([^;%s]*)"))
-                       or ""
+    if content_type then
+        media_type, params = str_match(content_type, "^%s*([^;%s]*)(.*)$")
+        media_type = str_lower(media_type)
+    end
     local truncatable
-    if media_type == "" then
+    if media_type == "" and params == "" then
         truncatable = true
-    elseif not str_find(media_type, MEDIA_TYPE) then
+    elseif not well_formed(media_type, params) then
         -- the parser Coraza picks for it is unknown
         truncatable = false
     else
