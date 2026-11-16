@@ -36,6 +36,8 @@ local str_match = string.match
 local str_sub = string.sub
 
 local DEFAULT_MAX_HEADERS = 100
+-- type "/" subtype, with the token characters of RFC 9110
+local MEDIA_TYPE = "^[a-z0-9!#$%%&'*+.^_`|~-]+/[a-z0-9!#$%%&'*+.^_`|~-]+$"
 
 local _M = {}
 
@@ -65,17 +67,20 @@ function _M.get_headers(max_headers)
 end
 
 
--- Coraza fails to parse a cut multipart, JSON or XML body, so only the
--- other types can be inspected up to a size limit.
+-- Media types Coraza fails to parse cut: multipart, and the types the JSON
+-- and XML parsers are picked for, by prefix, in coraza.conf-recommended
+-- (rules 200000, 200001 and 200006), or by suffix.
+local NOT_TRUNCATABLE = {
+    "^multipart/", "^application/json", "^application/xml",
+    "^application/soap%+xml", "^text/xml", "^application/[a-z0-9.-]+%+json",
+    "/json$", "/xml$", "%+json$", "%+xml$",
+}
+
 function _M.can_truncate(media_type)
-    if str_sub(media_type, 1, 10) == "multipart/" then
-        return false
-    end
-    local subtype = str_match(media_type, "/(.+)$") or ""
-    if subtype == "json" or subtype == "xml"
-       or str_sub(subtype, -5) == "+json"
-       or str_sub(subtype, -4) == "+xml" then
-        return false
+    for _, p in ipairs(NOT_TRUNCATABLE) do
+        if str_find(media_type, p) then
+            return false
+        end
     end
     return true
 end
@@ -131,32 +136,45 @@ local function read_file_prefix(path, n)
     if not f then
         return nil, nil, err
     end
-    local size = f:seek("end")
-    f:seek("set", 0)
-    local data = f:read(n)
+    local size
+    size, err = f:seek("end")
+    local data
+    if size and size > 0 then
+        f:seek("set", 0)
+        data, err = f:read(n)
+    end
     f:close()
+    if not size or size > 0 and not data then
+        return nil, nil, err or "empty read"
+    end
     return data or "", size
 end
 
 
--- Reads the request body to inspect. Returns the body or nil, and the state:
+-- Reads the request body to inspect. Returns the body or nil, the state and,
+-- for "error", the error:
 --   "none"              no body
 --   "skipped_type"      a media type media_type_allowed rejects
 --   "skipped_encoding"  a compressed Content-Encoding (gzip, br, ...)
 --   "skipped_oversize"  over max_size and of a type that cannot be cut
 --   "inspected"         the whole body is returned
 --   "truncated"         the first max_size bytes are returned
+--   "error"             the body spooled to a file could not be read
 --
 -- opts:
 --   max_size            bytes to inspect at most (required)
 --   media_type_allowed  function(media_type) -> boolean, default all types
 --
--- A body without a media type is inspected whatever media_type_allowed says:
--- CRS parses it as URLENCODED (rule 901340) and many backends parse it as
--- JSON. An unknown Content-Encoding is inspected as it came, as a backend
--- that does not know it is likely to do the same.
+-- A body without a media type, or with a malformed one, is inspected
+-- whatever media_type_allowed says: CRS parses it as URLENCODED (rule
+-- 901340) and many backends parse it as JSON. Repeated Content-Type headers,
+-- which nginx joins with commas, give a malformed one. An unknown
+-- Content-Encoding is inspected as it came, as a backend that does not know
+-- it is likely to do the same.
 --
--- A body spooled to a file is read up to max_size + 1 bytes only.
+-- A body without a length (chunked, or HTTP/2 without Content-Length) is
+-- read before it is skipped, as only reading tells whether there is one. A
+-- body spooled to a file is read up to max_size + 1 bytes only.
 function _M.read_body(opts)
     local max_size = opts.max_size
     local allowed = opts.media_type_allowed
@@ -165,18 +183,31 @@ function _M.read_body(opts)
     if len == 0 then
         return nil, "none"
     end
-    local length_known = len ~= nil
-    if not length_known and not ngx_var.http_transfer_encoding
-       and ngx.req.http_version() < 2 then
-        return nil, "none"
+    if not len then
+        if not ngx_var.http_transfer_encoding and ngx.req.http_version() < 2 then
+            return nil, "none"
+        end
+        req_read_body()
+        if not req_get_body_data() and not req_get_body_file() then
+            return nil, "none"
+        end
     end
 
     local content_type = ngx_var.http_content_type
     local media_type = content_type
-                       and str_lower(str_match(content_type, "^%s*([^;%s]+)") or "")
+                       and str_lower(str_match(content_type, "^%s*([^;%s]*)"))
                        or ""
-    if media_type ~= "" and allowed and not allowed(media_type) then
-        return nil, "skipped_type"
+    local truncatable
+    if media_type == "" then
+        truncatable = true
+    elseif not str_find(media_type, MEDIA_TYPE) then
+        -- the parser Coraza picks for it is unknown
+        truncatable = false
+    else
+        if allowed and not allowed(media_type) then
+            return nil, "skipped_type"
+        end
+        truncatable = _M.can_truncate(media_type)
     end
 
     local encoding = ngx_var.http_content_encoding
@@ -184,8 +215,7 @@ function _M.read_body(opts)
         return nil, "skipped_encoding"
     end
 
-    local truncatable = _M.can_truncate(media_type)
-    if length_known and len > max_size and not truncatable then
+    if len and len > max_size and not truncatable then
         return nil, "skipped_oversize"
     end
 
@@ -202,8 +232,7 @@ function _M.read_body(opts)
         local err
         data, size, err = read_file_prefix(file, max_size + 1)
         if not data then
-            ngx.log(ngx.ERR, "coraza: failed to read the request body file: ", err)
-            return nil, "none"
+            return nil, "error", "failed to read the request body file: " .. err
         end
     end
 

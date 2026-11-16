@@ -43,22 +43,31 @@ local coraza = require("resty.coraza")
 local request = require("resty.coraza.request")
 
 -- built once per process on a Go goroutine, and shared by every call with the
--- same directives; the calling request waits with ngx.sleep
-local rule_set, reason, err = coraza.rule_set([[
+-- same directives; the calling request waits with ngx.sleep. The rule set is
+-- freed once nobody references it, so keep it, here in a module of your own
+-- (my_waf.lua) that holds it between requests.
+local my_waf = require("my_waf")
+local rule_set = my_waf.rule_set
+if not rule_set then
+    local reason, err
+    rule_set, reason, err = coraza.rule_set([[
 Include @coraza.conf-recommended
 Include @crs-setup.conf.example
 Include @owasp_crs/*.conf
 SecRuleEngine DetectionOnly
 ]], { timeout = 60, max_rule_sets = 8 })
-if not rule_set then
-    -- "invalid", "timeout", "limit" or "error": the request is not inspected.
-    -- Reject it to fail closed, or return to let it through (fail open).
-    ngx.log(ngx.ERR, reason, ": ", err)
-    return ngx.exit(ngx.HTTP_SERVICE_UNAVAILABLE)
+    if not rule_set then
+        -- "invalid", "timeout", "limit" or "error": the request is not
+        -- inspected. Reject it to fail closed, or return to let it through
+        -- (fail open).
+        ngx.log(ngx.ERR, reason, ": ", err)
+        return ngx.exit(ngx.HTTP_SERVICE_UNAVAILABLE)
+    end
+    my_waf.rule_set = rule_set
 end
 
 local headers, too_many_headers = request.get_headers(100)
-local body, body_state = request.read_body({
+local body, body_state, body_err = request.read_body({
     max_size = 131072,
     media_type_allowed = request.media_type_matcher({
         "application/json", "application/*+json", "application/x-www-form-urlencoded",
@@ -70,6 +79,10 @@ local body, body_state = request.read_body({
 -- except a media type left out of media_type_allowed on purpose.
 if too_many_headers then
     return ngx.exit(ngx.HTTP_BAD_REQUEST)
+end
+if body_state == "error" then
+    ngx.log(ngx.ERR, body_err)
+    return ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
 end
 if body_state == "skipped_encoding" then
     return ngx.exit(ngx.HTTP_UNSUPPORTED_MEDIA_TYPE)
@@ -97,15 +110,16 @@ the result only reports what matched; `res.would_interrupt_rule_id` is the
 rule that would interrupt with `SecRuleEngine On` (0 for none), to watch
 before blocking. To block, use `SecRuleEngine On` and act on
 `res.interrupted` (and `res.interrupt_rule_id`), for example with
-`ngx.exit(ngx.HTTP_FORBIDDEN)`. Keep a reference to the rule set (for example next to the
-configuration it was built from): it is freed once nobody references it.
+`ngx.exit(ngx.HTTP_FORBIDDEN)`.
 
 `read_body` returns the body state: `none`, `skipped_type`,
-`skipped_encoding`, `skipped_oversize`, `inspected` or `truncated`. Multipart,
-JSON and XML bodies over `max_size` are skipped, as Coraza cannot parse them
-cut; other types are inspected up to `max_size`. A body without a media type
-is always inspected, as CRS parses it as URLENCODED (rule 901340) and many
-backends parse it as JSON. Only compressed codings (`gzip`, `deflate`, `br`,
+`skipped_encoding`, `skipped_oversize`, `inspected`, `truncated` or `error`
+(with the error as a third value, when a body spooled to a file cannot be
+read). Multipart, JSON and XML bodies over `max_size` are skipped, as Coraza
+cannot parse them cut; other types are inspected up to `max_size`. A body
+without a media type, or with a malformed one (repeated `Content-Type`
+headers, which nginx joins with commas, give one), is always inspected, as
+CRS parses it as URLENCODED (rule 901340) and many backends parse it as JSON. Only compressed codings (`gzip`, `deflate`, `br`,
 `compress`, `zstd`) give `skipped_encoding`; an unknown coding is inspected
 as it came.
 

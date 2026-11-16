@@ -363,3 +363,270 @@ inspected a=1
 POST /t
 --- response_body
 none nil
+
+
+
+=== TEST 14: repeated Content-Type headers, joined by nginx, are inspected
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({
+                max_size = 1024,
+                media_type_allowed = request.media_type_matcher({ "application/json" }),
+            })
+            ngx.say(state, " ", body and #body or "-")
+        }
+    }
+--- request
+POST /t
+{"a":1}
+--- more_headers
+Content-Type: application/json
+Content-Type: application/json
+--- response_body
+inspected 7
+
+
+
+=== TEST 15: a repeated Content-Type does not take a body out of the allowed types
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({
+                max_size = 1024,
+                media_type_allowed = request.media_type_matcher({ "application/json" }),
+            })
+            ngx.say(state, " ", body and #body or "-")
+        }
+    }
+--- request
+POST /t
+{"a":1}
+--- more_headers
+Content-Type: text/plain
+Content-Type: application/json
+--- response_body
+inspected 7
+
+
+
+=== TEST 16: the body of a request with repeated Content-Type headers is matched
+--- config
+    location /t {
+        content_by_lua_block {
+            local coraza = require("resty.coraza")
+            local request = require("resty.coraza.request")
+            local crs = require("crs")
+
+            local rs = assert(coraza.rule_set(crs.directives()))
+            local body, state = request.read_body({
+                max_size = 1024,
+                media_type_allowed = request.media_type_matcher({ "application/json" }),
+            })
+            local res = assert(coraza.eval(rs, {
+                method = ngx.req.get_method(),
+                uri = ngx.var.request_uri,
+                protocol = ngx.var.server_protocol,
+                client_ip = ngx.var.remote_addr,
+                server_name = ngx.var.host,
+                headers = request.get_headers(),
+                body = body,
+            }))
+            ngx.say("body: ", state)
+            ngx.say("920620: ", res.rule_ids:find("920620", 1, true) ~= nil)
+            ngx.say("941100: ", res.rule_ids:find("941100", 1, true) ~= nil)
+        }
+    }
+--- request
+POST /t
+{"q": "<script>alert(1)</script>"}
+--- more_headers
+Content-Type: application/json
+Content-Type: application/json
+User-Agent: curl/8.5.0
+Accept: */*
+--- response_body
+body: inspected
+920620: true
+941100: true
+
+
+
+=== TEST 17: malformed media types are inspected, and not cut
+--- config
+    location /body {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({
+                max_size = 16,
+                media_type_allowed = request.media_type_matcher({
+                    "application/x-www-form-urlencoded",
+                }),
+            })
+            ngx.say(state, " ", body and #body or "-")
+        }
+    }
+    location /t {
+        content_by_lua_block {
+            local cases = {
+                { "unicode space", '{"a":1}', "\194\160application/json" },
+                { "unicode space over max_size", '{"a":"0123456789abcdef"}',
+                  "\194\160text/plain" },
+                { "no subtype", "abc", "application" },
+                { "allowed", "a=1", "application/x-www-form-urlencoded" },
+                { "not allowed", "abc", "text/plain" },
+            }
+            local raw_http = require("raw_http")
+            for _, c in ipairs(cases) do
+                ngx.print(c[1], ": ", raw_http.request("POST", "/body",
+                                                       { ["Content-Type"] = c[3] }, c[2]))
+            end
+        }
+    }
+--- response_body
+unicode space: inspected 7
+unicode space over max_size: skipped_oversize -
+no subtype: inspected 3
+allowed: inspected 3
+not allowed: skipped_type -
+
+
+
+=== TEST 18: media types Coraza picks the JSON or XML parser for by prefix
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            for _, t in ipairs({
+                "application/json-seq", "application/jsonl", "application/xml-dtd",
+                "application/soap+xml", "application/xml-patch+xml",
+                "text/xml-external-parsed-entity", "application/vnd.a+json-seq",
+                "application/x-ndjson", "text/csv",
+            }) do
+                ngx.say(t, ": ", request.can_truncate(t))
+            end
+        }
+    }
+--- response_body
+application/json-seq: false
+application/jsonl: false
+application/xml-dtd: false
+application/soap+xml: false
+application/xml-patch+xml: false
+text/xml-external-parsed-entity: false
+application/vnd.a+json-seq: false
+application/x-ndjson: true
+text/csv: true
+
+
+
+=== TEST 19: an HTTP/2 request without body but with a type not allowed has none
+--- http2
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({
+                max_size = 1024,
+                media_type_allowed = request.media_type_matcher({ "application/json" }),
+            })
+            ngx.say(state, " ", body)
+        }
+    }
+--- more_headers
+Content-Type: text/plain
+--- response_body
+none nil
+
+
+
+=== TEST 20: an HTTP/2 request without body but with Content-Encoding has none
+--- http2
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({ max_size = 1024 })
+            ngx.say(state, " ", body)
+        }
+    }
+--- more_headers
+Content-Type: application/json
+Content-Encoding: gzip
+--- response_body
+none nil
+
+
+
+=== TEST 21: an HTTP/2 body of a type not allowed is still skipped
+--- http2
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({
+                max_size = 1024,
+                media_type_allowed = request.media_type_matcher({ "application/json" }),
+            })
+            ngx.say(state, " ", body)
+        }
+    }
+--- request
+POST /t
+abc
+--- more_headers
+Content-Type: text/plain
+--- response_body
+skipped_type nil
+
+
+
+=== TEST 22: an empty chunked body has none
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local body, state = request.read_body({
+                max_size = 1024,
+                media_type_allowed = request.media_type_matcher({ "application/json" }),
+            })
+            ngx.say(state, " ", body)
+        }
+    }
+--- raw_request eval
+"POST /t HTTP/1.1\r
+Host: localhost\r
+Connection: close\r
+Content-Type: text/plain\r
+Transfer-Encoding: chunked\r
+\r
+0\r
+\r
+"
+--- response_body
+none nil
+
+
+
+=== TEST 23: a body file that cannot be read is an error, not none
+--- config
+    client_body_buffer_size 1k;
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            ngx.req.read_body()
+            os.remove(ngx.req.get_body_file())
+            local body, state, err = request.read_body({ max_size = 4096 })
+            ngx.say(state, " ", body)
+            ngx.say(err:find("failed to read the request body file", 1, true) ~= nil)
+        }
+    }
+--- request eval
+"POST /t\n" . ("a=" . ("x" x 9000))
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+--- response_body
+error nil
+true

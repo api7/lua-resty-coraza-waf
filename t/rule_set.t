@@ -221,3 +221,113 @@ cached: 0
 abandoned: timeout
 other: built
 cached: 1
+
+
+
+=== TEST 9: a build that ends during the last wait is returned, not timed out
+--- config
+    location /t {
+        content_by_lua_block {
+            local coraza = require("resty.coraza")
+            local crs = require("crs")
+
+            -- running on the first poll, and over on the next one
+            local build_poll = coraza.build_poll
+            local polls = 0
+            coraza.build_poll = function(job, on_free)
+                polls = polls + 1
+                if polls == 1 then
+                    return false
+                end
+                while true do
+                    local rs, err = build_poll(job, on_free)
+                    if rs ~= false then
+                        return rs, err
+                    end
+                    ngx.sleep(0.01)
+                end
+            end
+            local rs, reason = coraza.rule_set(crs.directives("# 9"), { timeout = 0.001 })
+            coraza.build_poll = build_poll
+            ngx.say(rs and "built" or reason)
+        }
+    }
+--- response_body
+built
+
+
+
+=== TEST 10: the wait starts from the current time, not the cached one
+--- config
+    location /t {
+        content_by_lua_block {
+            local coraza = require("resty.coraza")
+            local crs = require("crs")
+
+            -- leaves ngx.now() 0.2s behind
+            local t = os.clock()
+            while os.clock() - t < 0.2 do end
+
+            local build_poll = coraza.build_poll
+            local polls = 0
+            coraza.build_poll = function(job, on_free)
+                polls = polls + 1
+                if polls <= 3 then
+                    return false
+                end
+                while true do
+                    local rs, err = build_poll(job, on_free)
+                    if rs ~= false then
+                        return rs, err
+                    end
+                    ngx.sleep(0.01)
+                end
+            end
+            local rs, reason = coraza.rule_set(crs.directives("# 10"), { timeout = 0.1 })
+            coraza.build_poll = build_poll
+            ngx.say(rs and "built" or reason)
+        }
+    }
+--- response_body
+built
+
+
+
+=== TEST 11: an abandoned build that fails is cached for its own failed_ttl
+--- config
+    location /t {
+        content_by_lua_block {
+            local coraza = require("resty.coraza")
+            local crs = require("crs")
+            local d = 'SecRule ARGS "@rx (" "id:11,phase:1,pass"'
+
+            local build_poll = coraza.build_poll
+            coraza.build_poll = function() return false end
+            local rs, reason = coraza.rule_set(d, { timeout = 0, failed_ttl = 0 })
+            coraza.build_poll = build_poll
+            ngx.say("abandoned: ", rs and "built" or reason)
+
+            while coraza.stats().building > 0 do
+                ngx.sleep(0.05)
+            end
+
+            -- this call finishes the abandoned build
+            local other = assert(coraza.rule_set(crs.directives("# 11"),
+                                                 { failed_ttl = 3600 }))
+
+            local build_start = coraza.build_start
+            local starts = 0
+            coraza.build_start = function(...)
+                starts = starts + 1
+                return build_start(...)
+            end
+            rs, reason = coraza.rule_set(d, { failed_ttl = 0 })
+            coraza.build_start = build_start
+            ngx.say("again: ", rs and "built" or reason, ", built again: ", starts == 1)
+            ngx.say("other: ", other.handle ~= nil)
+        }
+    }
+--- response_body
+abandoned: timeout
+again: invalid, built again: true
+other: true

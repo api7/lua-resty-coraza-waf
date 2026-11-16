@@ -25,12 +25,9 @@ local ffi_string = ffi.string
 local ffi_new = ffi.new
 local ffi_gc = ffi.gc
 local package = package
-local io_open = io.open
 local tonumber = tonumber
 local tostring = tostring
 local pcall = pcall
-local str_gmatch = string.gmatch
-local str_gsub = string.gsub
 local setmetatable = setmetatable
 local collectgarbage = collectgarbage
 local pairs = pairs
@@ -106,18 +103,6 @@ local cache = {
 local _M = { version = "0.1.0" }
 
 
-local function find_library()
-    for dir in str_gmatch(package.cpath, "[^;]+") do
-        local path = str_gsub(dir, "%?", LIBRARY_NAME, 1)
-        local f = io_open(path, "rb")
-        if f then
-            f:close()
-            return path
-        end
-    end
-end
-
-
 -- Loads the library from path, or from package.cpath when path is nil, and
 -- waits for the Go runtime to start. Loading twice keeps the library loaded
 -- first.
@@ -126,7 +111,7 @@ function _M.load(path)
         return true
     end
 
-    path = path or find_library()
+    path = path or package.searchpath(LIBRARY_NAME, package.cpath)
     if not path then
         return nil, LIBRARY_NAME .. " is not found in package.cpath"
     end
@@ -190,7 +175,7 @@ end
 
 -- Polls the job of rs once. Returns true when the job is over, with
 -- rs.handle or rs.err set.
-local function poll_once(rs, directives, failed_ttl)
+local function poll_once(rs, directives)
     local built, err = _M.build_poll(rs.job, release)
     if built == false then
         return false
@@ -215,33 +200,30 @@ local function poll_once(rs, directives, failed_ttl)
             cache.failed[d] = nil
         end
     end
-    cache.failed[directives] = { err = err, expire = now + failed_ttl }
+    cache.failed[directives] = { err = err, expire = now + rs.failed_ttl }
     return true
 end
 
 
 -- Finishes the builds whose waiting requests gave up: a built rule set is
 -- then only weakly held and freed unless a caller picks it up.
-local function reap(failed_ttl)
+local function reap()
     for directives, rs in pairs(cache.pending) do
-        poll_once(rs, directives, failed_ttl)
+        poll_once(rs, directives)
     end
 end
 
 
-local function wait_build(rs, directives, timeout, failed_ttl)
+local function wait_build(rs, directives, timeout)
+    ngx.update_time()
     local deadline = ngx.now() + timeout
-    while rs.job do
-        if poll_once(rs, directives, failed_ttl) then
-            break
-        end
-
-        ngx.sleep(POLL_INTERVAL)
-        ngx.update_time()
-        if ngx.now() > deadline then
+    while rs.job and not poll_once(rs, directives) do
+        if ngx.now() >= deadline then
             -- the job keeps running in Go; a later call picks it up
             return nil, "timeout", "timed out waiting for the rule set to build"
         end
+        ngx.sleep(POLL_INTERVAL)
+        ngx.update_time()
     end
 
     -- another request waiting on the same job may have seen it end
@@ -276,7 +258,7 @@ function _M.rule_set(directives, opts)
     local max = opts and opts.max_rule_sets
 
     if next(cache.pending) then
-        reap(failed_ttl)
+        reap()
     end
 
     local rs = cache.rule_sets[directives]
@@ -285,7 +267,7 @@ function _M.rule_set(directives, opts)
             return rs
         end
         if rs.job then
-            return wait_build(rs, directives, timeout, failed_ttl)
+            return wait_build(rs, directives, timeout)
         end
     end
 
@@ -315,11 +297,11 @@ function _M.rule_set(directives, opts)
         return nil, "error", err
     end
 
-    rs = { job = job }
+    rs = { job = job, failed_ttl = failed_ttl }
     cache.rule_sets[directives] = rs
     cache.pending[directives] = rs
     cache.count = cache.count + 1
-    return wait_build(rs, directives, timeout, failed_ttl)
+    return wait_build(rs, directives, timeout)
 end
 
 

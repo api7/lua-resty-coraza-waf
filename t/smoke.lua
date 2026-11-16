@@ -16,7 +16,23 @@ local function check(cond, ...)
     end
 end
 
-local ok, err = coraza.load(arg[1] or "./coraza_waf.so")
+local lib_path = arg[1] or "./coraza_waf.so"
+
+local cpath = package.cpath
+package.cpath = "/nonexistent/?.so"
+local ok, err = coraza.load()
+check(not ok and err:find("not found in package.cpath", 1, true),
+      "load without the library in package.cpath:", tostring(err))
+
+-- found in package.cpath as coraza_waf.so
+local dir = os.tmpname()
+os.remove(dir)
+local rc = os.execute(string.format('mkdir %q && ln -s "$(realpath %q)" %q/coraza_waf.so',
+                                    dir, lib_path, dir))
+check(rc == 0 or rc == true, "failed to link the library in", dir)
+package.cpath = dir .. "/?.so;" .. cpath
+ok, err = coraza.load()
+os.execute(string.format("rm -r %q", dir))
 check(ok, err)
 
 local directives = table.concat({
