@@ -52,9 +52,8 @@ test:
 	cd go && CGO_ENABLED=1 $(GO) test -count=1 -tags $(GO_TAGS) ./...
 
 install:
-	$(INSTALL) -d $(DESTDIR)$(LIBDIR) $(DESTDIR)$(LUADIR)/resty/coraza
+	$(INSTALL) -d $(DESTDIR)$(LIBDIR) $(DESTDIR)$(LUADIR)/resty
 	$(INSTALL) -m 644 lib/resty/coraza.lua $(DESTDIR)$(LUADIR)/resty/
-	$(INSTALL) -m 644 lib/resty/coraza/request.lua $(DESTDIR)$(LUADIR)/resty/coraza/
 ifeq ($(wildcard prebuilt),)
 	$(INSTALL) -m 755 $(OUTPUT_NAME) $(DESTDIR)$(LIBDIR)/coraza_waf.so
 else
