@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, for example 0.1.0 or v0.1.0"
+        description: "Release version X.Y.Z, for example 0.1.0 or v0.1.0"
         required: true
   push:
     branches: [main]
@@ -28,7 +28,6 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
-      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,26 +39,23 @@ jobs:
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          semver_re="^v?([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$"
+          # X.Y.Z only: LuaRocks versions have no prerelease part, and the
+          # rockspec version is X.Y.Z-1
+          semver_re="^v?([0-9]+\.[0-9]+\.[0-9]+)$"
           if [ -n "$RELEASE_VERSION" ]; then
-              [[ $RELEASE_VERSION =~ $semver_re ]] || { echo "version input is not X.Y.Z[-prerelease]"; exit 1; }
+              [[ $RELEASE_VERSION =~ $semver_re ]] || { echo "version input is not X.Y.Z"; exit 1; }
               version="${BASH_REMATCH[1]}"
           else
               title="${HEAD_COMMIT_MESSAGE%%$'\n'*}"
               if [[ $title =~ ^(.*)\ \(#[0-9]+\)$ ]]; then
                   title="${BASH_REMATCH[1]}"
               fi
-              title_re="^feat: release v?([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$"
+              title_re="^feat: release v?([0-9]+\.[0-9]+\.[0-9]+)$"
               [[ $title =~ $title_re ]] || { echo "commit title is not 'feat: release vX.Y.Z'"; exit 1; }
               version="${BASH_REMATCH[1]}"
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
-          if [[ $version == *-* ]]; then
-              echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-              echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Verify rockspec
         env:
@@ -128,14 +124,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
-          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
-          flags=()
-          if [ "$PRERELEASE" = "true" ]; then
-              flags+=(--prerelease)
-          fi
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --title "$TAG" --notes-file release-notes.md "${flags[@]}"
+              --target "$GITHUB_SHA" --title "$TAG" --notes-file release-notes.md
 
   verify:
     needs: [prepare, release]

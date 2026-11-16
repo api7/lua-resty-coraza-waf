@@ -224,3 +224,40 @@ func TestDeepJSON(t *testing.T) {
 		t.Fatalf("nested JSON took %v", d)
 	}
 }
+
+// GHSA-5gj4-9gm7-2fx2: before Coraza 3.8.1 a dotted property ("a.b")
+// overwrote the flattened name of a nested one ({"a":{"b":...}}), hiding
+// the nested value from the rules.
+func TestJSONKeyCollision(t *testing.T) {
+	rs := newTestRuleSet(t)
+	post := func(body string) *result {
+		req := baseRequest("/hello")
+		req.method = "POST"
+		req.headers = append(req.headers, [2]string{"Content-Type", "application/json"})
+		req.body = []byte(body)
+		res, _, _ := run(t, rs, req)
+		return res
+	}
+
+	nested := post(`{"account":{"role":"1' OR '1'='1"}}`)
+	decoy := post(`{"account":{"role":"1' OR '1'='1"},"account.role":"safe"}`)
+	if nested.anomalyScore == 0 {
+		t.Fatal("nested SQL injection not detected")
+	}
+	if decoy.anomalyScore < nested.anomalyScore {
+		t.Fatalf("a dotted decoy lowered the score from %d to %d",
+			nested.anomalyScore, decoy.anomalyScore)
+	}
+}
+
+func TestArgsLimitRepeatedNamesHideNothing(t *testing.T) {
+	rs, err := newRuleSet("SecArgumentsLimit 2\nSecRuleEngine DetectionOnly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// two names, four values before the attack: c is dropped
+	res, _, _ := run(t, rs, baseRequest("/hello?a=1&a=2&b=1&b=2&c=attack"))
+	if !res.argsLimitReached {
+		t.Fatal("dropped arguments not reported")
+	}
+}

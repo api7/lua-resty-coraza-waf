@@ -16,9 +16,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Rule sets built asynchronously on a Go goroutine (`cwaf_build_start` /
   `cwaf_build_poll`), one `cwaf_eval` call per request running phases 1 and 2
   and logging, and panic recovery in every exported function.
-- Coraza v3.8.1 or later is required: earlier versions take time and memory
-  quadratic in the nesting depth of a JSON body (GHSA-6gcq-wc29-5xf2; a 32 KiB
-  body took about a minute and 2.7 GB on v3.3.3).
+- Coraza v3.8.1 or later is required. On earlier versions a JSON body takes
+  time and memory quadratic in its nesting depth (GHSA-6gcq-wc29-5xf2; a
+  32 KiB body took about a minute and 2.7 GB on v3.3.3), and a dotted property
+  such as `"a.b"` overwrites a nested `{"a":{"b":...}}` value before the rules
+  see it (GHSA-5gj4-9gm7-2fx2).
 - `args_limit_reached` is Coraza's `ARGUMENTS_LIMIT_REACHED`: arguments were
   dropped over `SecArgumentsLimit`, from the query or from a body.
 - `resty.coraza`: the LuaJIT FFI binding, and `rule_set()`, which builds a rule
