@@ -13,7 +13,7 @@ neither Go nor libre2.
 | Component | Version |
 |---|---|
 | Coraza | v3.8.1 |
-| OWASP CRS | v4.25.0 |
+| OWASP CRS | v4.30.0 |
 | RE2 / Abseil | 2025-11-05 / 20260817.0 |
 
 ## Install
@@ -90,16 +90,18 @@ local res = assert(coraza.eval(rule_set, {
     headers = headers,
     body = body,
 }))
--- res.anomaly_score, res.rule_ids ("942100,949110"), res.matches (JSON)
+-- res.anomaly_score, res.rule_ids ("942100,949110,980170"), res.matches (JSON)
 ```
 
 `eval` runs request phases 1 and 2 and logging in one call. Response phases
-are never run. With `SecRuleEngine DetectionOnly` nothing is interrupted and
-the result only reports what matched; `res.would_interrupt_rule_id` is the
-rule that would interrupt with `SecRuleEngine On` (0 for none), to watch
-before blocking. To block, use `SecRuleEngine On` and act on
-`res.interrupted` (and `res.interrupt_rule_id`), for example with
-`ngx.exit(ngx.HTTP_FORBIDDEN)`.
+are never run. Logging also runs when a phase fails, for example when a body
+over `SecRequestBodyInMemoryLimit` cannot be written to a temporary file;
+`eval` then returns `nil` and the error. With `SecRuleEngine DetectionOnly`
+nothing is interrupted and the result only reports what matched;
+`res.would_interrupt_rule_id` is the rule that would interrupt with
+`SecRuleEngine On` (0 for none), to watch before blocking. To block, use
+`SecRuleEngine On` and act on `res.interrupted` (and `res.interrupt_rule_id`),
+for example with `ngx.exit(ngx.HTTP_FORBIDDEN)`.
 
 Coraza inspects only what `eval` is given. When reading the request:
 

@@ -132,7 +132,7 @@ function _M.load(path)
     -- the first call into the library waits for the Go runtime to finish
     -- initializing (about 0.1s); take that wait here rather than in the
     -- first request
-    lib.cwaf_stats(ffi_new("int64_t[3]"))
+    lib.cwaf_stats(ffi_new("int64_t[4]"))
     return true
 end
 
@@ -328,7 +328,8 @@ local function ensure_header_cap(n)
 end
 
 
--- Inspects one request: phases 1 and 2 and logging; nothing is blocked
+-- Inspects one request: phases 1 and 2 and logging. Logging also runs when a
+-- phase fails, and then nil and the error are returned. Nothing is blocked
 -- here, the caller acts on interrupted. req fields: method, uri,
 -- protocol, client_ip, client_port, server_ip, server_port, server_name,
 -- tx_id, headers ({{name, value}, ...}), body, log_matched_data.
@@ -397,14 +398,17 @@ end
 
 
 -- Process wide counters: rule sets alive and builds running on the Go side,
--- recovered panics, and rule sets held through rule_set().
+-- recovered panics, transactions that failed to close (removing a temporary
+-- body file; the result of eval is kept), and rule sets held through
+-- rule_set().
 function _M.stats()
-    local out = ffi_new("int64_t[3]")
+    local out = ffi_new("int64_t[4]")
     lib.cwaf_stats(out)
     return {
         rule_sets = tonumber(out[0]),
         building = tonumber(out[1]),
         panics = tonumber(out[2]),
+        close_errors = tonumber(out[3]),
         cached = cache.count,
     }
 end

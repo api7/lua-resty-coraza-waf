@@ -3,9 +3,11 @@ module github.com/api7/lua-resty-coraza-waf/go
 go 1.27.0
 
 require (
-	github.com/corazawaf/coraza-coreruleset/v4 v4.25.0
+	github.com/corazawaf/coraza-coreruleset/coraza/v3 v3.8.1
+	github.com/corazawaf/coraza-coreruleset/crs/v4 v4.30.0
 	github.com/corazawaf/coraza-wasilibs v0.3.0
 	github.com/corazawaf/coraza/v3 v3.8.1
+	github.com/jcchavezs/mergefs v0.1.1
 )
 
 require (
