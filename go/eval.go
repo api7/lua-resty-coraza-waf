@@ -69,39 +69,31 @@ type match struct {
 var truncatedMarker = []byte(`{"truncated":true}`)
 
 // evaluate runs the request phases of one transaction and writes the rule IDs
-// followed by the matches JSON into out.
+// followed by the matches JSON into out. As in Coraza's HTTP middleware, the
+// logging phase runs and the transaction is closed on every path, including
+// when the request phases fail. A failure to close (removing a temporary
+// body file) does not change the result; it is counted in closeErrors and
+// written to the debug log.
 func evaluate(rs *ruleSet, req *request, out []byte) (*result, error) {
 	tx := rs.waf.NewTransactionWithID(req.txID)
-	defer tx.Close()
+	logger := tx.DebugLogger()
+	defer func() {
+		if err := tx.Close(); err != nil {
+			closeErrors.Add(1)
+			logger.Error().Err(err).Msg("Failed to close the transaction")
+		}
+	}()
+
+	it, err := processRequest(tx, req)
+	tx.ProcessLogging()
+	if err != nil {
+		return nil, err
+	}
 
 	res := &result{anomalyScore: -1}
 	if tx.IsRuleEngineOff() {
 		return res, nil
 	}
-
-	tx.ProcessConnection(req.clientIP, req.clientPort, req.serverIP, req.serverPort)
-	tx.ProcessURI(req.uri, req.method, req.protocol)
-	for _, h := range req.headers {
-		tx.AddRequestHeader(h[0], h[1])
-	}
-	if req.serverName != "" {
-		tx.SetServerName(req.serverName)
-	}
-
-	it := tx.ProcessRequestHeaders()
-	if it == nil && len(req.body) > 0 && tx.IsRequestBodyAccessible() {
-		var err error
-		if it, _, err = tx.WriteRequestBody(req.body); err != nil {
-			return nil, err
-		}
-	}
-	if it == nil {
-		var err error
-		if it, err = tx.ProcessRequestBody(); err != nil {
-			return nil, err
-		}
-	}
-	tx.ProcessLogging()
 
 	if it != nil {
 		// a drop or a deny without status has Status 0
@@ -130,6 +122,33 @@ func evaluate(rs *ruleSet, req *request, out []byte) (*result, error) {
 
 	writeMatches(tx.MatchedRules(), req.logMatchedData, res, out)
 	return res, nil
+}
+
+// processRequest runs phases 1 and 2 and returns the interruption.
+func processRequest(tx types.Transaction, req *request) (*types.Interruption, error) {
+	if tx.IsRuleEngineOff() {
+		return nil, nil
+	}
+
+	tx.ProcessConnection(req.clientIP, req.clientPort, req.serverIP, req.serverPort)
+	tx.ProcessURI(req.uri, req.method, req.protocol)
+	for _, h := range req.headers {
+		tx.AddRequestHeader(h[0], h[1])
+	}
+	if req.serverName != "" {
+		tx.SetServerName(req.serverName)
+	}
+
+	if it := tx.ProcessRequestHeaders(); it != nil {
+		return it, nil
+	}
+	if len(req.body) > 0 && tx.IsRequestBodyAccessible() {
+		it, _, err := tx.WriteRequestBody(req.body)
+		if err != nil || it != nil {
+			return it, err
+		}
+	}
+	return tx.ProcessRequestBody()
 }
 
 // writeMatches keeps the rules that have logging enabled, the same filter as

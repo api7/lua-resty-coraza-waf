@@ -95,5 +95,6 @@ collectgarbage("collect")
 local stats = coraza.stats()
 check(stats.rule_sets == 0, "rule set not freed:", tostring(stats.rule_sets))
 check(stats.panics == 0, "panics:", tostring(stats.panics))
+check(stats.close_errors == 0, "close errors:", tostring(stats.close_errors))
 
 print("ok: rule ids " .. res.rule_ids .. ", score " .. res.anomaly_score)

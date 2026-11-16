@@ -23,7 +23,8 @@
 //   - every call is synchronous and Go never calls back into Lua;
 //   - every exported function recovers panics and reports them as an error;
 //   - one request is one cwaf_eval call: phase 1, phase 2 and logging, after
-//     which the transaction is closed. Response phases are never run.
+//     which the transaction is closed, also when a phase fails. Response
+//     phases are never run.
 package main
 
 /*
@@ -65,8 +66,10 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
+	corazaconf "github.com/corazawaf/coraza-coreruleset/coraza/v3"
+	crs "github.com/corazawaf/coraza-coreruleset/crs/v4"
 	"github.com/corazawaf/coraza/v3"
+	"github.com/jcchavezs/mergefs"
 )
 
 var (
@@ -76,6 +79,8 @@ var (
 	nextID   atomic.Int64
 	panics   atomic.Int64
 	building atomic.Int64
+	// transactions that failed to close, see evaluate
+	closeErrors atomic.Int64
 )
 
 type ruleSet struct {
@@ -112,6 +117,9 @@ func goString(p *C.char, n C.int) string {
 	return C.GoStringN(p, n)
 }
 
+// @owasp_crs/, @crs-setup.conf.example and @coraza.conf-recommended
+var rootFS = mergefs.Merge(crs.FS, corazaconf.FS)
+
 func newRuleSet(directives string) (rs *ruleSet, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -120,7 +128,7 @@ func newRuleSet(directives string) (rs *ruleSet, err error) {
 		}
 	}()
 	w, err := coraza.NewWAF(coraza.NewWAFConfig().
-		WithRootFS(coreruleset.FS).
+		WithRootFS(rootFS).
 		WithDirectives(directives))
 	if err != nil {
 		return nil, err
@@ -284,8 +292,8 @@ func toRequest(req *C.cwaf_request_t) *request {
 	return r
 }
 
-// cwaf_stats writes the number of live rule sets, rule sets being built and
-// recovered panics.
+// cwaf_stats writes the number of live rule sets, rule sets being built,
+// recovered panics and transactions that failed to close.
 //
 //export cwaf_stats
 func cwaf_stats(out *C.int64_t) {
@@ -294,12 +302,13 @@ func cwaf_stats(out *C.int64_t) {
 			panics.Add(1)
 		}
 	}()
-	s := unsafe.Slice(out, 3)
+	s := unsafe.Slice(out, 4)
 	mu.Lock()
 	s[0] = C.int64_t(len(wafs))
 	mu.Unlock()
 	s[1] = C.int64_t(building.Load())
 	s[2] = C.int64_t(panics.Load())
+	s[3] = C.int64_t(closeErrors.Load())
 }
 
 func main() {}

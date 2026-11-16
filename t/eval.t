@@ -27,7 +27,7 @@ Content-Type: application/x-www-form-urlencoded
 User-Agent: curl/8.5.0
 Accept: */*
 --- response_body
-rule ids: 942100,949110
+rule ids: 942100,949110,980170
 interrupted: false, would interrupt: 949110
 
 
@@ -52,7 +52,7 @@ POST /t
 User-Agent: curl/8.5.0
 Accept: */*
 --- response_body
-rule ids: 920340,920640,941100,941110,941160,941390,949110
+rule ids: 920340,920640,941100,941110,941160,941390,949110,980170
 
 
 

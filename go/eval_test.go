@@ -19,9 +19,16 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/corazawaf/coraza/v3"
+	"github.com/corazawaf/coraza/v3/types"
 )
 
 const testDirectives = `Include @coraza.conf-recommended
@@ -317,5 +324,160 @@ func TestArgsLimitRepeatedNamesHideNothing(t *testing.T) {
 	res, _, _ := run(t, rs, baseRequest("/hello?a=1&a=2&b=1&b=2&c=attack"))
 	if !res.argsLimitReached {
 		t.Fatal("dropped arguments not reported")
+	}
+}
+
+func multipart(parts ...string) string {
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString("--x\r\n" + p + "\r\n")
+	}
+	b.WriteString("--x--\r\n")
+	return b.String()
+}
+
+// Bypasses fixed in CRS after v4.25.0, the last release of the legacy
+// coraza-coreruleset/v4 module, which detects none of these.
+func TestCRSSecurityFixes(t *testing.T) {
+	rs := newTestRuleSet(t)
+	cases := []struct {
+		name, uri, contentType, body string
+		ruleID                       string
+	}{
+		// GHSA-575j-qr6p-9763: command injection in the URL path
+		{"rce in path", "/;/bin/sh%20-c%20id", "", "", "932230"},
+		// GHSA-89h9-2j8h-9gp2: an upper case charset parameter name
+		{"charset name case", "/hello",
+			"application/x-www-form-urlencoded; CHARSET=utf-7", "a=b", "920480"},
+		// GHSA-qmx4-jfcv-fgww: a second _charset_ shadowing the first
+		{"repeated _charset_", "/hello", "multipart/form-data; boundary=x", multipart(
+			"Content-Disposition: form-data; name=\"_charset_\"\r\n\r\nutf-8",
+			"Content-Disposition: form-data; name=\"_charset_\"\r\n\r\nutf-7"), "922100"},
+		// V29-260924: a trailing slash after the upload extension
+		{"php upload with trailing slash", "/hello", "multipart/form-data; boundary=x", multipart(
+			"Content-Disposition: form-data; name=\"f\"; filename=\"shell.php/\"\r\n\r\nhi"), "933110"},
+		{"jsp upload with trailing slash", "/hello", "multipart/form-data; boundary=x", multipart(
+			"Content-Disposition: form-data; name=\"f\"; filename=\"shell.jsp/\"\r\n\r\nhi"), "944140"},
+		// GHSA-6jp8-c2w2-x7wr: attack in an XML attribute value
+		{"xml attribute", "/hello", "text/xml",
+			`<a b="1' UNION SELECT password FROM users--"/>`, "942100"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := baseRequest(c.uri)
+			if c.body != "" {
+				req.method = "POST"
+				req.headers = append(req.headers,
+					[2]string{"Content-Type", c.contentType},
+					[2]string{"Content-Length", strconv.Itoa(len(c.body))})
+				req.body = []byte(c.body)
+			}
+			_, ids, _ := run(t, rs, req)
+			if !strings.Contains(","+ids+",", ","+c.ruleID+",") {
+				t.Fatalf("rule %s did not match, matched %q", c.ruleID, ids)
+			}
+		})
+	}
+}
+
+// records the calls evaluate makes and can fail Close
+type recordingWAF struct {
+	coraza.WAF
+	calls    *[]string
+	closeErr error
+}
+
+func (w recordingWAF) NewTransactionWithID(id string) types.Transaction {
+	return recordingTx{w.WAF.NewTransactionWithID(id), w.calls, w.closeErr}
+}
+
+type recordingTx struct {
+	types.Transaction
+	calls    *[]string
+	closeErr error
+}
+
+func (tx recordingTx) ProcessLogging() {
+	*tx.calls = append(*tx.calls, "logging")
+	tx.Transaction.ProcessLogging()
+}
+
+func (tx recordingTx) Close() error {
+	*tx.calls = append(*tx.calls, "close")
+	if err := tx.Transaction.Close(); err != nil {
+		return err
+	}
+	return tx.closeErr
+}
+
+// A body over SecRequestBodyInMemoryLimit is buffered in a temporary file;
+// when that file cannot be created the request phases fail, and the logging
+// phase must still run and the transaction be closed.
+func TestBodyBufferFailureIsLoggedAndClosed(t *testing.T) {
+	dir := t.TempDir()
+	// Coraza buffers bodies in os.TempDir(), which it checks for writing
+	// when the rule set is built
+	tmp := filepath.Join(dir, "tmp")
+	if err := os.Mkdir(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	auditLog := filepath.Join(dir, "audit.log")
+	rs, err := newRuleSet(`SecRuleEngine On
+SecRequestBodyAccess On
+SecRequestBodyLimit 1048576
+SecRequestBodyInMemoryLimit 1024
+SecAuditEngine On
+SecAuditLogType Serial
+SecAuditLogFormat JSON
+SecAuditLogParts ABZ
+SecAuditLog ` + auditLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(tmp); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	rs.waf = recordingWAF{WAF: rs.waf, calls: &calls}
+
+	req := baseRequest("/hello")
+	req.method = "POST"
+	req.txID = "body-buffer-failure"
+	req.body = []byte(strings.Repeat("a", 4096))
+	if _, err := evaluate(rs, req, make([]byte, 1024)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("error %v, want the temporary file not created", err)
+	}
+
+	if strings.Join(calls, ",") != "logging,close" {
+		t.Fatalf("calls %v, want logging then close", calls)
+	}
+	data, err := os.ReadFile(auditLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), req.txID) {
+		t.Fatalf("transaction missing from the audit log: %q", data)
+	}
+}
+
+// A failure to close keeps the result and is counted.
+func TestCloseErrorKeepsResult(t *testing.T) {
+	rs := newTestRuleSet(t)
+	var calls []string
+	rs.waf = recordingWAF{WAF: rs.waf, calls: &calls, closeErr: errors.New("close failed")}
+
+	before := closeErrors.Load()
+	req := baseRequest("/hello")
+	req.headers = append(req.headers, [2]string{"X-Test", "deny"})
+	_, ids, _ := run(t, rs, req)
+	if ids != "10001" {
+		t.Fatalf("rule IDs %q, want 10001", ids)
+	}
+	if n := closeErrors.Load() - before; n != 1 {
+		t.Fatalf("close errors counted %d, want 1", n)
+	}
+	if strings.Join(calls, ",") != "logging,close" {
+		t.Fatalf("calls %v, want logging then close", calls)
 	}
 }
