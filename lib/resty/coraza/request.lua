@@ -39,13 +39,14 @@ local DEFAULT_MAX_HEADERS = 100
 local _M = {}
 
 
--- Returns the request headers as { {name, value}, ... }, one entry per value,
--- and whether more than max_headers (default 100) were sent. HTTP/2 carries
--- the host in :authority, so Host is added from $host when it is missing.
+-- Returns the request headers as { {name, value}, ... }, one entry per value
+-- with the values of a name in arrival order (names are lower case), and
+-- whether more than max_headers (default 100) were sent. HTTP/2 and HTTP/3
+-- carry the host in :authority, so Host is added from $host when it is
+-- missing there; an HTTP/1 request without Host is passed as it came.
 function _M.get_headers(max_headers)
-    local raw, truncated = req_get_headers(max_headers or DEFAULT_MAX_HEADERS, true)
+    local raw, truncated = req_get_headers(max_headers or DEFAULT_MAX_HEADERS)
     local headers = {}
-    local has_host = false
     for name, value in pairs(raw) do
         if type(value) == "table" then
             for _, v in ipairs(value) do
@@ -54,13 +55,10 @@ function _M.get_headers(max_headers)
         else
             headers[#headers + 1] = { name, value }
         end
-        if not has_host and str_lower(name) == "host" then
-            has_host = true
-        end
     end
 
-    if not has_host and ngx_var.host then
-        headers[#headers + 1] = { "Host", ngx_var.host }
+    if raw.host == nil and ngx.req.http_version() >= 2 and ngx_var.host then
+        headers[#headers + 1] = { "host", ngx_var.host }
     end
     return headers, truncated == "truncated"
 end

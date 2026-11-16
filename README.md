@@ -51,8 +51,10 @@ Include @owasp_crs/*.conf
 SecRuleEngine DetectionOnly
 ]], { timeout = 60, max_rule_sets = 8 })
 if not rule_set then
-    ngx.log(ngx.ERR, reason, ": ", err)  -- "invalid", "timeout", "limit" or "error"
-    return
+    -- "invalid", "timeout", "limit" or "error": the request is not inspected.
+    -- Reject it to fail closed, or return to let it through (fail open).
+    ngx.log(ngx.ERR, reason, ": ", err)
+    return ngx.exit(ngx.HTTP_SERVICE_UNAVAILABLE)
 end
 
 local headers, too_many_headers = request.get_headers(100)
@@ -62,6 +64,12 @@ local body, body_state = request.read_body({
         "application/json", "application/*+json", "application/x-www-form-urlencoded",
     }),
 })
+-- A body that is skipped ("skipped_type", "skipped_encoding",
+-- "skipped_oversize") or "truncated" is not, or only partly, inspected.
+-- Which ones to reject is a policy; here an oversized body is rejected.
+if body_state == "skipped_oversize" then
+    return ngx.exit(ngx.HTTP_REQUEST_ENTITY_TOO_LARGE)
+end
 
 local res = assert(coraza.eval(rule_set, {
     method = ngx.req.get_method(),

@@ -241,8 +241,9 @@ func TestJSONKeyCollision(t *testing.T) {
 
 	nested := post(`{"account":{"role":"1' OR '1'='1"}}`)
 	decoy := post(`{"account":{"role":"1' OR '1'='1"},"account.role":"safe"}`)
-	if nested.anomalyScore == 0 {
-		t.Fatal("nested SQL injection not detected")
+	// -1 means the score was not available
+	if nested.anomalyScore <= 0 {
+		t.Fatalf("nested SQL injection not detected: score %d", nested.anomalyScore)
 	}
 	if decoy.anomalyScore < nested.anomalyScore {
 		t.Fatalf("a dotted decoy lowered the score from %d to %d",

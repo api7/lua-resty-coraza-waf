@@ -163,3 +163,61 @@ after release: built
 ping: pong
 ping waited for the build: false
 build: built
+
+
+
+=== TEST 7: every request waiting on invalid directives gets the error
+--- config
+    location /t {
+        content_by_lua_block {
+            local coraza = require("resty.coraza")
+            local crs = require("crs")
+            -- the CRS first, so that the build runs long enough for both
+            local d = crs.directives('SecRule ARGS "@rx (" "id:1,phase:1,pass"')
+
+            local function get()
+                local rs, reason = coraza.rule_set(d)
+                return rs and "built" or reason
+            end
+            local a = ngx.thread.spawn(get)
+            local b = ngx.thread.spawn(get)
+            local _, ra = ngx.thread.wait(a)
+            local _, rb = ngx.thread.wait(b)
+            ngx.say(ra, " ", rb)
+            ngx.say("cached: ", coraza.stats().cached)
+        }
+    }
+--- response_body
+invalid invalid
+cached: 0
+
+
+
+=== TEST 8: a build nobody asks for again does not hold max_rule_sets
+--- config
+    location /t {
+        content_by_lua_block {
+            local coraza = require("resty.coraza")
+            local crs = require("crs")
+            local opts = { max_rule_sets = 1 }
+
+            local build_poll = coraza.build_poll
+            coraza.build_poll = function() return false end
+            local rs, reason = coraza.rule_set(crs.directives("# 8a"),
+                                               { timeout = 0, max_rule_sets = 1 })
+            coraza.build_poll = build_poll
+            ngx.say("abandoned: ", rs and "built" or reason)
+
+            while coraza.stats().building > 0 do
+                ngx.sleep(0.05)
+            end
+
+            rs, reason = coraza.rule_set(crs.directives("# 8b"), opts)
+            ngx.say("other: ", rs and "built" or reason)
+            ngx.say("cached: ", coraza.stats().cached)
+        }
+    }
+--- response_body
+abandoned: timeout
+other: built
+cached: 1

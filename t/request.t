@@ -231,3 +231,46 @@ Accept: */*
 --- response_body
 body: inspected
 rule ids: 942100,949110
+
+
+
+=== TEST 9: the values of a repeated header keep their arrival order
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local values = {}
+            for _, h in ipairs(request.get_headers()) do
+                if h[1] == "content-type" then
+                    values[#values + 1] = h[2]
+                end
+            end
+            ngx.say(table.concat(values, " | "))
+        }
+    }
+--- more_headers
+Content-Type: application/x-www-form-urlencoded
+content-type: text/plain
+--- response_body
+application/x-www-form-urlencoded | text/plain
+
+
+
+=== TEST 10: an HTTP/1.0 request without Host gets none
+--- config
+    location /t {
+        content_by_lua_block {
+            local request = require("resty.coraza.request")
+            local hosts = 0
+            for _, h in ipairs(request.get_headers()) do
+                if h[1]:lower() == "host" then
+                    hosts = hosts + 1
+                end
+            end
+            ngx.say("host headers: ", hosts)
+        }
+    }
+--- raw_request eval
+"GET /t HTTP/1.0\r\n\r\n"
+--- response_body
+host headers: 0

@@ -33,6 +33,8 @@ local str_gmatch = string.gmatch
 local str_gsub = string.gsub
 local setmetatable = setmetatable
 local collectgarbage = collectgarbage
+local pairs = pairs
+local next = next
 
 local LIBRARY_NAME = "coraza_waf"
 local ERRCAP = 512
@@ -185,27 +187,46 @@ local function release()
 end
 
 
+-- Polls the job of rs once. Returns true when the job is over, with
+-- rs.handle or rs.err set.
+local function poll_once(rs, directives, failed_ttl)
+    local built, err = _M.build_poll(rs.job, release)
+    if built == false then
+        return false
+    end
+
+    rs.job = nil
+    cache.pending[directives] = nil
+    if built then
+        rs.handle = built.handle
+        rs.box = built.box
+        return true
+    end
+
+    rs.err = err
+    cache.count = cache.count - 1
+    if cache.rule_sets[directives] == rs then
+        cache.rule_sets[directives] = nil
+    end
+    cache.failed[directives] = { err = err, expire = ngx.now() + failed_ttl }
+    return true
+end
+
+
+-- Finishes the builds whose waiting requests gave up: a built rule set is
+-- then only weakly held and freed unless a caller picks it up.
+local function reap(failed_ttl)
+    for directives, rs in pairs(cache.pending) do
+        poll_once(rs, directives, failed_ttl)
+    end
+end
+
+
 local function wait_build(rs, directives, timeout, failed_ttl)
     local deadline = ngx.now() + timeout
     while rs.job do
-        local built, err = _M.build_poll(rs.job, release)
-        if built then
-            rs.handle = built.handle
-            rs.box = built.box
-            rs.job = nil
-            cache.pending[directives] = nil
-            return rs
-        end
-
-        if built == nil then
-            rs.job = nil
-            cache.pending[directives] = nil
-            cache.count = cache.count - 1
-            if cache.rule_sets[directives] == rs then
-                cache.rule_sets[directives] = nil
-            end
-            cache.failed[directives] = { err = err, expire = ngx.now() + failed_ttl }
-            return nil, "invalid", err
+        if poll_once(rs, directives, failed_ttl) then
+            break
         end
 
         ngx.sleep(POLL_INTERVAL)
@@ -214,6 +235,11 @@ local function wait_build(rs, directives, timeout, failed_ttl)
             -- the job keeps running in Go; a later call picks it up
             return nil, "timeout", "timed out waiting for the rule set to build"
         end
+    end
+
+    -- another request waiting on the same job may have seen it end
+    if not rs.handle then
+        return nil, "invalid", rs.err
     end
     return rs
 end
@@ -226,7 +252,8 @@ end
 --
 -- opts:
 --   timeout        seconds to wait for a build, default 60; on timeout the
---                  build goes on and a later call returns its result
+--                  build goes on, a later call returns its result, and a
+--                  build nobody asks for again is freed once it ends
 --   max_rule_sets  limit of rule sets alive in this process, default none
 --   failed_ttl     seconds an invalid directives error is returned without
 --                  building again, default 60
@@ -241,12 +268,18 @@ function _M.rule_set(directives, opts)
     local failed_ttl = opts and opts.failed_ttl or 60
     local max = opts and opts.max_rule_sets
 
+    if next(cache.pending) then
+        reap(failed_ttl)
+    end
+
     local rs = cache.rule_sets[directives]
     if rs then
         if rs.handle then
             return rs
         end
-        return wait_build(rs, directives, timeout, failed_ttl)
+        if rs.job then
+            return wait_build(rs, directives, timeout, failed_ttl)
+        end
     end
 
     local failed = cache.failed[directives]
