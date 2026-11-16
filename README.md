@@ -66,8 +66,9 @@ local body, body_state = request.read_body({
 })
 -- A body that is skipped ("skipped_type", "skipped_encoding",
 -- "skipped_oversize") or "truncated" is not, or only partly, inspected.
--- Which ones to reject is a policy; here an oversized body is rejected.
-if body_state == "skipped_oversize" then
+-- Which ones to reject is a policy; here a body over max_size is rejected,
+-- whether it was skipped (JSON, XML, multipart) or cut (other types).
+if body_state == "skipped_oversize" or body_state == "truncated" then
     return ngx.exit(ngx.HTTP_REQUEST_ENTITY_TOO_LARGE)
 end
 
