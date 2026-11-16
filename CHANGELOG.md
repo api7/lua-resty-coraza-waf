@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- `coraza_waf.so`: Coraza v3.8.1 with the embedded OWASP CRS v4.14.0 as a Go
+- `coraza_waf.so`: Coraza v3.8.1 with the embedded OWASP CRS v4.25.0 as a Go
   shared library. `@rx` runs on RE2 through go-re2, linked statically together
   with Abseil and the C++ runtime, so the library only needs glibc 2.28.
 - Rule sets built asynchronously on a Go goroutine (`cwaf_build_start` /
@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   32 KiB body took about a minute and 2.7 GB on v3.3.3), and a dotted property
   such as `"a.b"` overwrites a nested `{"a":{"b":...}}` value before the rules
   see it (GHSA-5gj4-9gm7-2fx2).
+- libinjection-go v0.3.4 or later is required, above the v0.3.3 Coraza
+  v3.8.1 pins: on earlier versions `@detectSQLi` takes time quadratic in the
+  length of a quote-heavy string literal (GHSA-974q-67pr-5pc2; a 1 MiB
+  literal took about 12 seconds per call).
 - `args_limit_reached` is Coraza's `ARGUMENTS_LIMIT_REACHED`: arguments were
   dropped over `SecArgumentsLimit`, from the query or from a body.
 - `resty.coraza`: the LuaJIT FFI binding, and `rule_set()`, which builds a rule
