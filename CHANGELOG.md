@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- `coraza_waf.so`: Coraza v3.8.1 with the embedded OWASP CRS v4.25.0 as a Go
+- `coraza_waf.so`: Coraza v3.8.1 with the embedded OWASP CRS v4.30.0 as a Go
   shared library. `@rx` runs on RE2 through go-re2, linked statically together
   with Abseil and the C++ runtime, so the library only needs glibc 2.28.
 - Rule sets built asynchronously on a Go goroutine (`cwaf_build_start` /
@@ -25,6 +25,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   v3.8.1 pins: on earlier versions `@detectSQLi` takes time quadratic in the
   length of a quote-heavy string literal (GHSA-974q-67pr-5pc2; a 1 MiB
   literal took about 12 seconds per call).
+- CRS is embedded from the `coraza-coreruleset/crs/v4` module, not the legacy
+  `coraza-coreruleset/v4`, which is frozen at CRS v4.25.0 and misses the fixes
+  for GHSA-575j-qr6p-9763, GHSA-89h9-2j8h-9gp2, GHSA-qmx4-jfcv-fgww,
+  GHSA-6jp8-c2w2-x7wr and V29-260924.
+- `eval` runs the logging phase, and closes the transaction, also when a
+  request phase fails. `stats().close_errors` counts transactions that failed
+  to close; their result is kept.
 - `args_limit_reached` is Coraza's `ARGUMENTS_LIMIT_REACHED`: arguments were
   dropped over `SecArgumentsLimit`, from the query or from a body.
 - `resty.coraza`: the LuaJIT FFI binding, and `rule_set()`, which builds a rule
