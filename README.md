@@ -34,7 +34,6 @@ assert(require("resty.coraza").load())  -- finds coraza_waf.so in package.cpath
 ```lua
 -- access_by_lua_block (any phase that can yield)
 local coraza = require("resty.coraza")
-local request = require("resty.coraza.request")
 
 -- built once per process on a Go goroutine, and shared by every call with the
 -- same directives; the calling request waits with ngx.sleep. The rule set is
@@ -60,30 +59,20 @@ SecRuleEngine DetectionOnly
     my_waf.rule_set = rule_set
 end
 
-local headers, too_many_headers = request.get_headers(100)
-local body, body_state, body_err = request.read_body({
-    max_size = 131072,
-    media_type_allowed = request.media_type_matcher({
-        "application/json", "application/*+json", "application/x-www-form-urlencoded",
-    }),
-})
--- Headers past the first 100, and a body that is skipped ("skipped_type",
--- "skipped_encoding", "skipped_oversize") or "truncated", are not, or only
--- partly, inspected. Which ones to reject is a policy; here all of them are,
--- except a media type left out of media_type_allowed on purpose.
-if too_many_headers then
-    return ngx.exit(ngx.HTTP_BAD_REQUEST)
+-- { {name, value}, ... }, one entry per value
+local headers = {}
+for name, value in pairs(ngx.req.get_headers(100)) do
+    if type(value) == "table" then
+        for _, v in ipairs(value) do
+            headers[#headers + 1] = { name, v }
+        end
+    else
+        headers[#headers + 1] = { name, value }
+    end
 end
-if body_state == "error" then
-    ngx.log(ngx.ERR, body_err)
-    return ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
-end
-if body_state == "skipped_encoding" then
-    return ngx.exit(ngx.HTTP_UNSUPPORTED_MEDIA_TYPE)
-end
-if body_state == "skipped_oversize" or body_state == "truncated" then
-    return ngx.exit(ngx.HTTP_REQUEST_ENTITY_TOO_LARGE)
-end
+
+ngx.req.read_body()
+local body = ngx.req.get_body_data()  -- nil when spooled to a file
 
 local res = assert(coraza.eval(rule_set, {
     method = ngx.req.get_method(),
@@ -106,16 +95,18 @@ before blocking. To block, use `SecRuleEngine On` and act on
 `res.interrupted` (and `res.interrupt_rule_id`), for example with
 `ngx.exit(ngx.HTTP_FORBIDDEN)`.
 
-`read_body` returns the body state: `none`, `skipped_type`,
-`skipped_encoding`, `skipped_oversize`, `inspected`, `truncated` or `error`
-(with the error as a third value, when a body spooled to a file cannot be
-read). Multipart, JSON and XML bodies over `max_size` are skipped, as Coraza
-cannot parse them cut; other types are inspected up to `max_size`. A body
-without a media type, or with a malformed one (repeated `Content-Type`
-headers, which nginx joins with commas, give one), is always inspected, as
-CRS parses it as URLENCODED (rule 901340) and many backends parse it as JSON. Only compressed codings (`gzip`, `deflate`, `br`,
-`compress`, `zstd`) give `skipped_encoding`; an unknown coding is inspected
-as it came.
+Coraza inspects only what `eval` is given. When reading the request:
+
+- HTTP/2 and HTTP/3 carry the host in `:authority`, not in a `Host` header;
+  add one from `ngx.var.host` for the rules on `Host`.
+- Headers past the `ngx.req.get_headers` limit, a body spooled to a file
+  (over `client_body_buffer_size`) and a compressed body (`Content-Encoding`)
+  are not inspected, or not usefully.
+- Coraza picks the body parser from the first `Content-Type`, by the
+  prefixes of rules 200000, 200001 and 200006 of `coraza.conf-recommended`;
+  a multipart, JSON or XML body cut to a size limit fails to parse. CRS
+  parses a body without `Content-Type` as URLENCODED (rule 901340).
+- CRS rule 920620 flags repeated `Content-Type` headers.
 
 Each nginx worker runs its own Go runtime and builds its own copy of a rule
 set. Go sizes its scheduler from the CPUs it may use,
