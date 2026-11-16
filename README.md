@@ -13,8 +13,8 @@ neither Go nor libre2.
 | Component | Version |
 |---|---|
 | Coraza | v3.8.1 |
-| OWASP CRS | v4.14.0 |
-| RE2 / Abseil | 2024-07-02 / 20240722.0 |
+| OWASP CRS | v4.25.0 |
+| RE2 / Abseil | 2025-11-05 / 20260817.0 |
 
 ## Install
 
@@ -135,7 +135,7 @@ luajit t/smoke.lua ./coraza_waf.so             # plain LuaJIT
 
 ## Build from source
 
-Needs Go 1.25 or later and a C++17 compiler.
+Needs Go 1.27 or later and a C++17 compiler.
 
 ```sh
 # against the system libre2 (libre2-dev, pkg-config)

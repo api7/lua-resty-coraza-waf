@@ -9,16 +9,16 @@
 set -euo pipefail
 
 # a version given without its sha256 fails the checksum
-GO_VERSION=${GO_VERSION:-1.26.11}
+GO_VERSION=${GO_VERSION:-1.27.4}
 arch=$(uname -m)
 case "$arch" in
     x86_64)
         goarch=amd64
-        go_sha256=${GO_SHA256:-9849f4e04ee35303714e34fbc3ac8ab44ea3e448a95aa182f91e3b9b79c710ec}
+        go_sha256=${GO_SHA256:-7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840}
         ;;
     aarch64)
         goarch=arm64
-        go_sha256=${GO_SHA256:-6c2f29b458b5add0835f18b776f69c8881a6d88428f1484a6da55755e620757e}
+        go_sha256=${GO_SHA256:-3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92}
         ;;
     *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
 esac

@@ -251,6 +251,37 @@ func TestDeepJSON(t *testing.T) {
 	}
 }
 
+// GHSA-974q-67pr-5pc2: before libinjection-go 0.3.4 @detectSQLi took time
+// quadratic in the length of a quote-heavy string literal (1 MiB: about 10s
+// for each detectSQLi call).
+func TestSQLiStringLiteral(t *testing.T) {
+	rs, err := newRuleSet(`SecRequestBodyAccess On
+SecRequestBodyLimit 2097152
+SecRequestBodyInMemoryLimit 2097152
+SecRule ARGS "@detectSQLi" "id:1,phase:2,pass,log"
+SecRuleEngine DetectionOnly`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, literal := range map[string]string{
+		"backslash-escaped quote": strings.Repeat(`\'`, 524288),
+		"doubled quote":           strings.Repeat(`''`, 524288),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := baseRequest("/hello")
+			req.method = "POST"
+			req.headers = append(req.headers,
+				[2]string{"Content-Type", "application/x-www-form-urlencoded"})
+			req.body = []byte("q='" + literal)
+			start := time.Now()
+			run(t, rs, req)
+			if d := time.Since(start); d > 2*time.Second {
+				t.Fatalf("a %d-byte string literal took %v", len(req.body), d)
+			}
+		})
+	}
+}
+
 // GHSA-5gj4-9gm7-2fx2: before Coraza 3.8.1 a dotted property ("a.b")
 // overwrote the flattened name of a nested one ({"a":{"b":...}}), hiding
 // the nested value from the rules.
