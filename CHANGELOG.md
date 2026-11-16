@@ -29,13 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   waiting request, caches invalid directives and limits the rule sets alive.
   `load()` waits for the Go runtime to start, so that the first request does
   not block the worker.
-- `resty.coraza.request`: reads the request headers (with `Host` added for
-  HTTP/2) and the body (media type filter, compressed Content-Encoding skipped,
-  size limit, truncation only where Coraza can parse a cut body, spooled bodies
-  read up to the limit). A body without a media type, or with a malformed one
-  such as repeated `Content-Type` headers joined by nginx, is always
-  inspected, as CRS parses it as URLENCODED. A spooled body that cannot be
-  read gives the `error` state.
 - `would_interrupt_rule_id`: the rule that interrupts, or would interrupt with
   `SecRuleEngine On`, so that `DetectionOnly` shows what blocking would do.
 - The Go, Abseil and RE2 archives of the release build are checked against
