@@ -10,17 +10,27 @@
 set -euo pipefail
 
 PREFIX=${PREFIX:-$(pwd)/build/re2}
+# a version given without its sha256 fails the checksum
 ABSEIL_VERSION=${ABSEIL_VERSION:-20240722.0}
+ABSEIL_SHA256=${ABSEIL_SHA256:-f50e5ac311a81382da7fa75b97310e4b9006474f9560ac46f54a9967f07d4ae3}
 RE2_VERSION=${RE2_VERSION:-2024-07-02}
+RE2_SHA256=${RE2_SHA256:-eb2df807c781601c14a260a507a5bb4509be1ee626024cb45acbd57cb9d4032b}
 JOBS=${JOBS:-$(nproc)}
 
 src=$(mktemp -d)
 trap 'rm -rf "$src"' EXIT
 
-curl -fsSL "https://github.com/abseil/abseil-cpp/archive/refs/tags/${ABSEIL_VERSION}.tar.gz" \
-    | tar -xz -C "$src"
-curl -fsSL "https://github.com/google/re2/archive/refs/tags/${RE2_VERSION}.tar.gz" \
-    | tar -xz -C "$src"
+fetch() {
+    curl -fsSL -o "$src/archive.tar.gz" "$1"
+    echo "$2  $src/archive.tar.gz" | sha256sum -c --quiet -
+    tar -xzf "$src/archive.tar.gz" -C "$src"
+    rm "$src/archive.tar.gz"
+}
+
+fetch "https://github.com/abseil/abseil-cpp/releases/download/${ABSEIL_VERSION}/abseil-cpp-${ABSEIL_VERSION}.tar.gz" \
+    "$ABSEIL_SHA256"
+fetch "https://github.com/google/re2/releases/download/${RE2_VERSION}/re2-${RE2_VERSION}.tar.gz" \
+    "$RE2_SHA256"
 
 common=(
     -DCMAKE_BUILD_TYPE=Release

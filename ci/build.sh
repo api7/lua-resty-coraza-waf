@@ -8,16 +8,27 @@
 #
 set -euo pipefail
 
+# a version given without its sha256 fails the checksum
 GO_VERSION=${GO_VERSION:-1.26.11}
 arch=$(uname -m)
 case "$arch" in
-    x86_64) goarch=amd64 ;;
-    aarch64) goarch=arm64 ;;
+    x86_64)
+        goarch=amd64
+        go_sha256=${GO_SHA256:-9849f4e04ee35303714e34fbc3ac8ab44ea3e448a95aa182f91e3b9b79c710ec}
+        ;;
+    aarch64)
+        goarch=arm64
+        go_sha256=${GO_SHA256:-6c2f29b458b5add0835f18b776f69c8881a6d88428f1484a6da55755e620757e}
+        ;;
     *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
 esac
 
 if ! command -v go >/dev/null; then
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${goarch}.tar.gz" | tar -xz -C /usr/local
+    go_tar=$(mktemp)
+    curl -fsSL -o "$go_tar" "https://go.dev/dl/go${GO_VERSION}.linux-${goarch}.tar.gz"
+    echo "$go_sha256  $go_tar" | sha256sum -c --quiet -
+    tar -xzf "$go_tar" -C /usr/local
+    rm -f "$go_tar"
     export PATH=/usr/local/go/bin:$PATH
 fi
 
