@@ -111,15 +111,23 @@ Coraza inspects only what `eval` is given. When reading the request:
 - CRS rule 920620 flags repeated `Content-Type` headers.
 
 Each nginx worker runs its own Go runtime and builds its own copy of a rule
-set. Go sizes its scheduler from the CPUs it may use,
-and its GC and build goroutines run on threads beside the nginx worker. To
-limit them, set `GOMAXPROCS`, `GOGC` or `GOMEMLIMIT` and pass them to the
-workers with the nginx `env` directive, which nginx otherwise clears:
+set. `eval` runs on the worker's own thread. The runtime has threads of its
+own (5 or more per worker, also with `GOMAXPROCS=1`), which run the GC and
+rule set builds and inherit the worker's CPU affinity.
 
-```nginx
-env GOMAXPROCS=2;
-env GOMEMLIMIT=512MiB;
+The Go runtime reads the environment that the nginx master was started with.
+The nginx `env` directive neither sets nor clears what it sees, so
+`env GOMAXPROCS=2;` has no effect. Set the variables where nginx is started:
+
+```sh
+GOMAXPROCS=2 GOMEMLIMIT=512MiB nginx -p /path/to/prefix
 ```
+
+- `GOMAXPROCS`: Go defaults it to the CPUs the worker may use, which is 1 with
+  `worker_cpu_affinity`. Use 2 or more: with 1, a rule set build holds the
+  only processor and `eval` waits for it, which blocks the event loop.
+- `GOGC`: the GC takes about 10% of the CPU of a busy worker. A higher value
+  trades memory for less GC.
 
 ## Test
 
