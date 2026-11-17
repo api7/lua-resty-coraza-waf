@@ -1,0 +1,72 @@
+name: Security
+
+# Scans the Go dependencies for known vulnerabilities, with two tools:
+# - osv-scanner reads go/go.mod. It does not check the Go standard library.
+# - govulncheck checks the standard library of the toolchain the release is
+#   built with, and the modules, with the build tags of the release. It
+#   reports only vulnerabilities in code that is reached.
+# A pull request fails on a vulnerability it adds, and a push or the weekly
+# schedule fails on any, so that a new advisory against an existing
+# dependency shows up.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  osv-scanner-pr:
+    if: github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
+    with:
+      fail-on-vuln: true
+      # the token of a pull request from a fork cannot upload
+      upload-sarif: false
+
+  osv-scanner:
+    if: github.event_name != 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
+    with:
+      fail-on-vuln: true
+      upload-sarif: true
+
+  govulncheck:
+    runs-on: ubuntu-24.04
+    env:
+      GOVULNCHECK_VERSION: v1.9.0
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the Go version of the release build
+        id: go
+        run: echo "version=$(sed -n 's/^GO_VERSION=\${GO_VERSION:-\(.*\)}$/\1/p' ci/build.sh)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache: false
+
+      # re2_cgo builds go-re2 against libre2, found through pkg-config
+      - name: Install libre2
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libre2-dev pkg-config
+
+      - name: Run govulncheck
+        working-directory: go
+        run: |
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          go version
+          "$(go env GOPATH)/bin/govulncheck" -tags "$(sed -n 's/^GO_TAGS ?= //p' ../Makefile)" ./...
