@@ -12,7 +12,7 @@ __DATA__
             local crs = require("crs")
             local read_request = require("read_request")
 
-            local rs = assert(coraza.rule_set(crs.directives()))
+            local rs = assert(coraza.new(crs.directives()))
             local res = assert(coraza.eval(rs, read_request()))
             ngx.say("rule ids: ", res.rule_ids)
             ngx.say("interrupted: ", res.interrupted, ", would interrupt: ",
@@ -40,7 +40,7 @@ interrupted: false, would interrupt: 949110
             local crs = require("crs")
             local read_request = require("read_request")
 
-            local rs = assert(coraza.rule_set(crs.directives()))
+            local rs = assert(coraza.new(crs.directives()))
             local res = assert(coraza.eval(rs, read_request()))
             ngx.say("rule ids: ", res.rule_ids)
         }
@@ -64,7 +64,7 @@ rule ids: 920340,920640,941100,941110,941160,941390,949110,980170
             local crs = require("crs")
             local read_request = require("read_request")
 
-            local rs = assert(coraza.rule_set(crs.directives()))
+            local rs = assert(coraza.new(crs.directives()))
             local res = assert(coraza.eval(rs, read_request()))
             ngx.say("920620: ", res.rule_ids:find("920620", 1, true) ~= nil)
             ngx.say("941100: ", res.rule_ids:find("941100", 1, true) ~= nil)
