@@ -15,12 +15,13 @@
  * limitations under the License.
  */
 
-package main
+package waf
 
 import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/corazawaf/coraza/v3/experimental/plugins/plugintypes"
 	"github.com/corazawaf/coraza/v3/types"
@@ -32,29 +33,52 @@ const (
 	maxMatchesSize = 8192
 )
 
-type request struct {
-	method, uri, protocol string
-	clientIP              string
-	clientPort            int
-	serverIP              string
-	serverPort            int
-	serverName            string
-	txID                  string
-	headers               [][2]string
-	body                  []byte
-	logMatchedData        bool
+// Request is one HTTP request to inspect. Body is only read during Eval.
+type Request struct {
+	Method, URI, Protocol string
+	ClientIP              string
+	ClientPort            int
+	ServerIP              string
+	ServerPort            int
+	ServerName            string
+	TxID                  string
+	Headers               [][2]string
+	Body                  []byte
+	LogMatchedData        bool
+	// time allowed for the request phases, none when zero
+	Budget time.Duration
 }
 
-type result struct {
-	interrupted     int
-	interruptRuleID int
+// Status is the outcome of Eval.
+type Status int
+
+const (
+	// Done: every request phase ran
+	Done Status = iota
+	// Interrupted: a rule interrupted the request; only with SecRuleEngine On
+	Interrupted
+	// BudgetExhausted: the budget ran out and the rules after a checkpoint
+	// were skipped. The result holds the matches found before.
+	BudgetExhausted
+)
+
+// Result of Eval. RuleIDsLen bytes of comma separated rule IDs, then
+// MatchesLen bytes of the matches JSON array, are written to out.
+type Result struct {
+	Status          Status
+	InterruptRuleID int
 	// the rule that interrupts, or would interrupt with SecRuleEngine On
-	wouldInterruptRuleID int
-	matched              int
-	anomalyScore         int
-	argsLimitReached     bool
-	ruleIDsLen           int
-	matchesLen           int
+	WouldInterruptRuleID int
+	Matched              int
+	// -1 when CRS did not compute it
+	AnomalyScore     int
+	ArgsLimitReached bool
+	// phase (1 or 2) whose checkpoint ran out, with BudgetExhausted
+	BudgetPhase int
+	// time spent in Eval
+	Elapsed    time.Duration
+	RuleIDsLen int
+	MatchesLen int
 }
 
 type match struct {
@@ -68,14 +92,20 @@ type match struct {
 
 var truncatedMarker = []byte(`{"truncated":true}`)
 
-// evaluate runs the request phases of one transaction and writes the rule IDs
+// Eval runs the request phases of one transaction and writes the rule IDs
 // followed by the matches JSON into out. As in Coraza's HTTP middleware, the
 // logging phase runs and the transaction is closed on every path, including
 // when the request phases fail. A failure to close (removing a temporary
-// body file) does not change the result; it is counted in closeErrors and
+// body file) does not change the result; it is counted in CloseErrors and
 // written to the debug log.
-func evaluate(rs *ruleSet, req *request, out []byte) (*result, error) {
-	tx := rs.waf.NewTransactionWithID(req.txID)
+//
+// With a budget, a phase that runs out skips its remaining rules, and the
+// request body phase is skipped when the headers phase ran out. A budget
+// that runs out after the last checkpoint does not change the status;
+// Elapsed shows it.
+func (w *WAF) Eval(req *Request, out []byte) (*Result, error) {
+	start := time.Now()
+	tx := w.waf.NewTransactionWithID(req.TxID)
 	logger := tx.DebugLogger()
 	defer func() {
 		if err := tx.Close(); err != nil {
@@ -84,27 +114,42 @@ func evaluate(rs *ruleSet, req *request, out []byte) (*result, error) {
 		}
 	}()
 
-	it, err := processRequest(tx, req)
+	var b *budget
+	if req.Budget > 0 {
+		if st, ok := tx.(plugintypes.TransactionState); ok {
+			b = &budget{deadline: start.Add(req.Budget)}
+			budgets.Store(tx, b)
+			defer budgets.Delete(tx)
+			st.Variables().TX().Set(budgetVar, []string{"1"})
+		}
+	}
+
+	it, err := processRequest(tx, req, b)
 	tx.ProcessLogging()
 	if err != nil {
 		return nil, err
 	}
 
-	res := &result{anomalyScore: -1}
+	res := &Result{AnomalyScore: -1}
+	defer func() { res.Elapsed = time.Since(start) }()
 	if tx.IsRuleEngineOff() {
 		return res, nil
 	}
 
+	if b != nil && b.phase != 0 {
+		res.Status = BudgetExhausted
+		res.BudgetPhase = int(b.phase)
+	}
 	if it != nil {
 		// a drop or a deny without status has Status 0
-		res.interrupted = 1
-		res.interruptRuleID = it.RuleID
-		res.wouldInterruptRuleID = it.RuleID
+		res.Status = Interrupted
+		res.InterruptRuleID = it.RuleID
+		res.WouldInterruptRuleID = it.RuleID
 	} else if d, ok := tx.(interface {
 		DetectionOnlyInterruption() *types.Interruption
 	}); ok {
 		if di := d.DetectionOnlyInterruption(); di != nil {
-			res.wouldInterruptRuleID = di.RuleID
+			res.WouldInterruptRuleID = di.RuleID
 		}
 	}
 
@@ -112,38 +157,47 @@ func evaluate(rs *ruleSet, req *request, out []byte) (*result, error) {
 		vars := st.Variables()
 		if v := vars.TX().Get("blocking_inbound_anomaly_score"); len(v) > 0 {
 			if n, err := strconv.Atoi(v[0]); err == nil {
-				res.anomalyScore = n
+				res.AnomalyScore = n
 			}
 		}
 		// set by Coraza when it dropped arguments over SecArgumentsLimit,
 		// from the query or from a body processor
-		res.argsLimitReached = vars.ArgumentsLimitReached().Get() == "1"
+		res.ArgsLimitReached = vars.ArgumentsLimitReached().Get() == "1"
 	}
 
-	writeMatches(tx.MatchedRules(), req.logMatchedData, res, out)
+	writeMatches(tx.MatchedRules(), req.LogMatchedData, res, out)
 	return res, nil
 }
 
-// processRequest runs phases 1 and 2 and returns the interruption.
-func processRequest(tx types.Transaction, req *request) (*types.Interruption, error) {
+// processRequest runs phases 1 and 2 and returns the interruption. Phase 2
+// is skipped once the budget b has run out.
+func processRequest(tx types.Transaction, req *Request, b *budget) (*types.Interruption, error) {
 	if tx.IsRuleEngineOff() {
 		return nil, nil
 	}
 
-	tx.ProcessConnection(req.clientIP, req.clientPort, req.serverIP, req.serverPort)
-	tx.ProcessURI(req.uri, req.method, req.protocol)
-	for _, h := range req.headers {
+	tx.ProcessConnection(req.ClientIP, req.ClientPort, req.ServerIP, req.ServerPort)
+	tx.ProcessURI(req.URI, req.Method, req.Protocol)
+	for _, h := range req.Headers {
 		tx.AddRequestHeader(h[0], h[1])
 	}
-	if req.serverName != "" {
-		tx.SetServerName(req.serverName)
+	if req.ServerName != "" {
+		tx.SetServerName(req.ServerName)
 	}
 
 	if it := tx.ProcessRequestHeaders(); it != nil {
 		return it, nil
 	}
-	if len(req.body) > 0 && tx.IsRequestBodyAccessible() {
-		it, _, err := tx.WriteRequestBody(req.body)
+	if b != nil {
+		if b.phase == 0 && !time.Now().Before(b.deadline) {
+			b.phase = types.PhaseRequestHeaders
+		}
+		if b.phase != 0 {
+			return nil, nil
+		}
+	}
+	if len(req.Body) > 0 && tx.IsRequestBodyAccessible() {
+		it, _, err := tx.WriteRequestBody(req.Body)
 		if err != nil || it != nil {
 			return it, err
 		}
@@ -153,7 +207,7 @@ func processRequest(tx types.Transaction, req *request) (*types.Interruption, er
 
 // writeMatches keeps the rules that have logging enabled, the same filter as
 // the Coraza error callback.
-func writeMatches(rules []types.MatchedRule, withData bool, res *result, out []byte) {
+func writeMatches(rules []types.MatchedRule, withData bool, res *Result, out []byte) {
 	matchesCap := maxMatchesSize
 	if matchesCap > len(out)/2 {
 		matchesCap = len(out) / 2
@@ -170,7 +224,7 @@ func writeMatches(rules []types.MatchedRule, withData bool, res *result, out []b
 		if l, ok := mr.(interface{ Log() bool }); ok && !l.Log() {
 			continue
 		}
-		res.matched++
+		res.Matched++
 		rule := mr.Rule()
 		id := rule.ID()
 
@@ -234,12 +288,12 @@ func writeMatches(rules []types.MatchedRule, withData bool, res *result, out []b
 	}
 	matches = append(matches, ']')
 
-	res.ruleIDsLen = len(ids)
+	res.RuleIDsLen = len(ids)
 	if n == 0 && !truncated {
 		return
 	}
 	if len(matches) <= len(out)-len(ids) {
-		res.matchesLen = copy(out[len(ids):], matches)
+		res.MatchesLen = copy(out[len(ids):], matches)
 	}
 }
 

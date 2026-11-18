@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package main
+package waf
 
 import wasilibs "github.com/corazawaf/coraza-wasilibs"
 
