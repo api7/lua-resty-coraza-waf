@@ -8,6 +8,7 @@ require (
 	github.com/corazawaf/coraza-wasilibs v0.3.0
 	github.com/corazawaf/coraza/v3 v3.8.1
 	github.com/jcchavezs/mergefs v0.1.1
+	golang.org/x/sys v0.50.0
 )
 
 require (
@@ -28,7 +29,6 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
-	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	rsc.io/binaryregexp v0.2.0 // indirect
