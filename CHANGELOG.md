@@ -13,9 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `coraza_waf.so`: Coraza v3.8.1 with the embedded OWASP CRS v4.30.0 as a Go
   shared library. `@rx` runs on RE2 through go-re2, linked statically together
   with Abseil and the C++ runtime, so the library only needs glibc 2.28.
-- Rule sets built asynchronously on a Go goroutine (`cwaf_build_start` /
-  `cwaf_build_poll`), one `cwaf_eval` call per request running phases 1 and 2
-  and logging, and panic recovery in every exported function.
+- A versioned C ABI over the importable `go/waf` package: `rt_abi_version`,
+  `rt_init`, `rt_stats`, `waf_new`, `waf_free`, `waf_eval`, `waf_build_start`
+  and `waf_build_poll`. One `waf_eval` call per request runs phases 1 and 2
+  and logging, and every exported function recovers panics. `waf_free`
+  releases the matchers that the rule set shares (Coraza `WAF.Close`).
 - Coraza v3.8.1 or later is required. On earlier versions a JSON body takes
   time and memory quadratic in its nesting depth (GHSA-6gcq-wc29-5xf2; a
   32 KiB body took about a minute and 2.7 GB on v3.3.3), and a dotted property
@@ -34,12 +36,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   to close; their result is kept.
 - `args_limit_reached` is Coraza's `ARGUMENTS_LIMIT_REACHED`: arguments were
   dropped over `SecArgumentsLimit`, from the query or from a body.
-- `resty.coraza`: the LuaJIT FFI binding, and `rule_set()`, which builds a rule
-  set once per process while the request waits with `ngx.sleep`, shares it
-  between calls with the same directives, keeps a build that outlives the
-  waiting request, caches invalid directives and limits the rule sets alive.
-  `load()` waits for the Go runtime to start, so that the first request does
-  not block the worker.
+- `resty.coraza`: the LuaJIT FFI binding. `load()` checks the ABI version,
+  applies `GOMAXPROCS`, `GOGC` and `GOMEMLIMIT` given by the caller and waits
+  for the Go runtime to start, so that the first request does not. `new()`
+  builds a rule set on the calling thread, or with `async` on a goroutine,
+  polled from one timer per worker, shared between callers with the same
+  directives and waited for with `wait()`; `eval()` returns `not_ready` until
+  it is built. `stats()` reports the Go heap, GC, threads and their CPU
+  affinity, and the rule sets.
+- An evaluation budget: `eval()` takes `budget`, checked before each CRS
+  file in each request phase. Once spent, the rest of the phase is skipped,
+  and the body phase when the headers phase ran out; logging still runs and
+  the result has `status = "budget"`.
 - `would_interrupt_rule_id`: the rule that interrupts, or would interrupt with
   `SecRuleEngine On`, so that `DetectionOnly` shows what blocking would do.
 - The Go, Abseil and RE2 archives of the release build are checked against
