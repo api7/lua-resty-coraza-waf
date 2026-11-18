@@ -133,6 +133,12 @@ budget by the time of one CRS file, of parsing the body and of logging;
 (`SecRequestBodyLimit`, `SecArgumentsLimit`, `SecRequestBodyJsonDepthLimit`)
 remain the main bound on that time.
 
+With `SecRuleEngine On`, the skipped rules include the CRS blocking
+evaluation (949110), so a request over the budget is not blocked: reject it
+on `"budget"` to fail closed. The first requests of a worker take longer
+than the next ones (a small JSON request took 6.9 ms, then 3.0 and 0.5 ms),
+so a tight budget mostly hits them.
+
 Coraza inspects only what `eval` is given. When reading the request:
 
 - HTTP/2 and HTTP/3 carry the host in `:authority`, not in a `Host` header;
