@@ -57,7 +57,7 @@ licenses() {
 
     # the modules of the packages linked into the library, not of the whole
     # module graph
-    (cd go && go list -deps -tags "$tags" \
+    (cd go && go list -deps -buildvcs=false -tags "$tags" \
         -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' .) |
         sort -u |
         while read -r path version dir; do
