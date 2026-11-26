@@ -52,6 +52,14 @@ cmake -S "$src/re2-${RE2_VERSION}" -B "$src/re2-build" "${common[@]}" \
 cmake --build "$src/re2-build" -j "$JOBS"
 cmake --install "$src/re2-build"
 
+# kept for the notices of the libraries linked into coraza_waf.so
+for name in abseil-cpp:${ABSEIL_VERSION} re2:${RE2_VERSION}; do
+    dir=$PREFIX/share/licenses/${name%%:*}
+    mkdir -p "$dir"
+    cp "$src/${name%%:*}-${name#*:}/LICENSE" "$dir/"
+    echo "${name#*:}" > "$dir/VERSION"
+done
+
 # cgo runs "pkg-config --cflags --libs re2" without --static, so the full
 # static link line goes into Libs. The C++ runtime flags are not allowed in
 # pkg-config output; the Makefile passes them through CGO_LDFLAGS.
