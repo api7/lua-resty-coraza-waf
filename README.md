@@ -18,7 +18,13 @@ neither Go nor libre2.
 
 ## Install
 
-Build from source (below).
+```sh
+luarocks install https://github.com/api7/lua-resty-coraza-waf/releases/download/v0.1.0/lua-resty-coraza-waf-0.1.0-1.rockspec
+```
+
+The rockspec downloads the release tarball and installs `resty/coraza.lua` and
+the library matching `uname -m` as `coraza_waf.so` in the Lua C module
+directory. Other platforms build from source (below).
 
 ## Usage
 
@@ -203,6 +209,18 @@ make install INST_PREFIX=/usr/local
 ```
 
 Release libraries are built by `ci/build.sh` in `manylinux_2_28` containers.
+
+## Release
+
+1. Add `rockspec/lua-resty-coraza-waf-X.Y.Z-1.rockspec` and move the
+   `[Unreleased]` notes of `CHANGELOG.md` under `## [X.Y.Z]`.
+2. Merge it with the title `feat: release vX.Y.Z`, or run the Release
+   workflow by hand with the version.
+
+The workflow builds and tests both libraries, creates the GitHub release with
+the tarball and the rockspec (with the tarball md5 added), installs it back
+from the release on x86_64 and aarch64, then uploads the rockspec to LuaRocks
+with the `LUAROCKS_TOKEN` secret.
 
 ## License
 
