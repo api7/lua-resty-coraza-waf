@@ -125,6 +125,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
+          # gh creates the tag at --target only when it does not exist: an
+          # existing tag must already point to the commit that was built
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG" \
+              --jq ".[] | select(.ref == \"refs/tags/$TAG\") | .object.type + \" \" + .object.sha")
+          if [ -n "$ref" ]; then
+              read -r type sha <<< "$ref"
+              if [ "$type" = tag ]; then
+                  sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq .object.sha)
+              fi
+              if [ "$sha" != "$GITHUB_SHA" ]; then
+                  echo "tag $TAG points to $sha, not to the built commit $GITHUB_SHA"
+                  exit 1
+              fi
+          fi
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" --title "$TAG" --notes-file release-notes.md
 

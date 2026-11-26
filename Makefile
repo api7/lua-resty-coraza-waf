@@ -28,7 +28,7 @@ OS := $(shell uname -s)
 ARCH := $(shell uname -m | sed -e 's/^arm64$$/aarch64/' -e 's/^amd64$$/x86_64/')
 PREBUILT := prebuilt/coraza_waf-$(ARCH).so
 
-.PHONY: all build test install clean
+.PHONY: all build test install clean print-go-tags
 
 all:
 ifeq ($(wildcard prebuilt),)
@@ -47,6 +47,9 @@ build:
 	cd go && CGO_ENABLED=1 $(GO) build -trimpath -buildvcs=false -buildmode=c-shared \
 		-tags $(GO_TAGS) -o $(abspath $(OUTPUT_NAME)) .
 	rm -f $(basename $(OUTPUT_NAME)).h
+
+print-go-tags:
+	@echo $(GO_TAGS)
 
 test:
 	cd go && CGO_ENABLED=1 $(GO) test -count=1 -tags $(GO_TAGS) ./...

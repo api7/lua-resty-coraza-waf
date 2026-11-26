@@ -2,7 +2,8 @@
 #
 # Builds prebuilt/coraza_waf-<arch>.so inside a manylinux_2_28 container
 # (glibc 2.28), with RE2, Abseil and the C++ runtime linked statically, then
-# runs the Go tests against it.
+# runs the Go tests against it. Also writes the notices of the third-party
+# code it contains, prebuilt/THIRD_PARTY_NOTICES-<arch>.
 #
 #   docker run --rm -v "$PWD:/src" -w /src quay.io/pypa/manylinux_2_28_$(uname -m) ci/build.sh
 #
@@ -33,7 +34,7 @@ if ! command -v go >/dev/null; then
 fi
 
 re2=$(pwd)/build/re2
-if [ ! -f "$re2/lib/pkgconfig/static/re2.pc" ]; then
+if [ ! -f "$re2/lib/pkgconfig/static/re2.pc" ] || [ ! -f "$re2/share/licenses/re2/LICENSE" ]; then
     PREFIX=$re2 scripts/build-re2.sh
 fi
 
@@ -41,6 +42,7 @@ out=prebuilt/coraza_waf-${arch}.so
 mkdir -p prebuilt
 make build RE2_STATIC="$re2" OUTPUT_NAME="$out"
 make test RE2_STATIC="$re2"
+scripts/third-party-notices.sh "$re2" "prebuilt/THIRD_PARTY_NOTICES-${arch}"
 
 # the library must only need glibc, at most the version of this image
 readelf -d "$out" | awk '/NEEDED/ {print $5}' | tr -d '[]' | while read -r lib; do

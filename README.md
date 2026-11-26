@@ -24,7 +24,8 @@ luarocks install https://github.com/api7/lua-resty-coraza-waf/releases/download/
 
 The rockspec downloads the release tarball and installs `resty/coraza.lua` and
 the library matching `uname -m` as `coraza_waf.so` in the Lua C module
-directory. Other platforms build from source (below).
+directory. Other platforms build from source (below). The tarball's
+`THIRD_PARTY_NOTICES` holds the licenses of the code linked into the library.
 
 ## Usage
 

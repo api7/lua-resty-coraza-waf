@@ -53,4 +53,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - The Go, Abseil and RE2 archives of the release build are checked against
   pinned sha256 sums.
 - Releases with the library prebuilt for Linux x86_64 and aarch64, installed by
-  the rockspec without Go or libre2.
+  the rockspec without Go or libre2. The tarball carries
+  `THIRD_PARTY_NOTICES`, the license texts of the code linked into the library.
